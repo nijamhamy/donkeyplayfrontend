@@ -1,0 +1,51 @@
+.high-value-glow {
+  box-shadow: 0 0 20px 5px rgba(255, 165, 0, 0.7);
+  border-radius: 12px;
+  animation: glow-pulse 1.5s infinite;
+}
+
+@keyframes glow-pulse {
+  0% {
+    opacity: 0.8;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+  }
+
+  100% {
+    opacity: 0.8;
+    transform: scale(1);
+  }
+}
+
+.striker-blink {
+  animation: red-blink 0.5s infinite;
+}
+
+@keyframes red-blink {
+  50% {
+    box-shadow: 0 0 25px 10px rgba(255, 0, 0, 0.8);
+  }
+}
+
+.interactive:hover {
+  transform: translateY(-10px) scale(1.1);
+  transition: all 0.2s ease;
+  z-index: 100;
+}
+
+.card-item {
+  transition: transform 0.2s;
+}
+
+:root {
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-top: env(safe-area-inset-top, 0px);
+}
+
+body {
+  padding-bottom: var(--safe-bottom);
+}
