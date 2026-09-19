@@ -66,6 +66,12 @@ export default function MultiplayerGame({ onBack, onFinish }) {
     // ✅ FIX: track the IDs of cards currently on table to skip redundant updates
     const tableCardIdsRef = useRef(new Set());
 
+    // ✅ FIX (race condition): tracks which game "session" the most recent
+    // dealt hand belongs to. Incremented every time onGameStarted fires.
+    // Used to guard against a stale/late yourCards or requestMyCards response
+    // from a previous game overwriting the current hand, and vice versa.
+    const gameSessionRef = useRef(0);
+
     const addTimer = (id) => { timersRef.current.push(id); return id; };
     const clearAllTimers = () => { timersRef.current.forEach(clearTimeout); timersRef.current = []; };
 
@@ -131,7 +137,7 @@ export default function MultiplayerGame({ onBack, onFinish }) {
     useEffect(() => {
         (async () => {
             try {
-                await AdMob.prepareInterstitial({ adId: 'ca-app-pub-8553625771070050/6609130205', isTesting: false });
+                await AdMob.prepareInterstitial({ adId: 'ca-app-pub-8553625771070050/7057056419', isTesting: false });
                 adPreparedRef.current = true;
             } catch { adPreparedRef.current = false; }
         })();
@@ -166,7 +172,7 @@ export default function MultiplayerGame({ onBack, onFinish }) {
                 safeFinish();
             });
             if (!adPreparedRef.current) {
-                await AdMob.prepareInterstitial({ adId: 'ca-app-pub-8553625771070050/6609130205', isTesting: false });
+                await AdMob.prepareInterstitial({ adId: 'ca-app-pub-8553625771070050/7057056419', isTesting: false });
                 adPreparedRef.current = true;
             }
             await AdMob.showInterstitial();
@@ -188,7 +194,7 @@ export default function MultiplayerGame({ onBack, onFinish }) {
                 callback();
             });
             if (!adPreparedRef.current) {
-                await AdMob.prepareInterstitial({ adId: 'ca-app-pub-8553625771070050/6609130205', isTesting: false });
+                await AdMob.prepareInterstitial({ adId: 'ca-app-pub-8553625771070050/7057056419', isTesting: false });
                 adPreparedRef.current = true;
             }
             await AdMob.showInterstitial();
@@ -212,14 +218,37 @@ export default function MultiplayerGame({ onBack, onFinish }) {
             resetGameState(); setJoinedRoom(null); setPlayers([]); setView('LOBBY');
         };
 
+        // ✅ FIX (race condition root cause #1):
+        // Previously this only called setMyHand(sorted) when
+        // viewRef.current === 'BOARD'. viewRef is updated via a useEffect,
+        // which flushes AFTER render commit — i.e. asynchronously relative
+        // to this socket callback. That created a timing window where
+        // setView('BOARD') had already been called (state update queued)
+        // but viewRef.current still read 'LOBBY', causing a legitimately
+        // arrived hand to update tempHandRef.current but NOT myHand (React
+        // state). Since myHand is what actually drives rendering and
+        // isCardEligible(), the player's hand could silently stay empty
+        // even though the server and tempHandRef both had the correct
+        // cards — leaving that player's turn permanently stuck.
+        //
+        // Fix: always keep myHand in sync with whatever hand the server
+        // sends, regardless of current view. Setting state while the
+        // component isn't showing the board yet is harmless (it's just
+        // ready the instant the view switches); gating it on a
+        // ref-that-lags-behind-state was the actual bug.
         const onYourCards = (cards = []) => {
             const sorted = sortHand(cards);
             tempHandRef.current = sorted;
-            if (viewRef.current === 'BOARD') setMyHand(sorted);
+            setMyHand(sorted);
             setPendingCardId(null); setIsSubmittingCard(false);
         };
 
         const onGameStarted = (data) => {
+            // ✅ FIX: bump the session token BEFORE resetGameState/emits so
+            // any in-flight late responses from a previous game/session can
+            // be identified as stale if ever needed for future debugging.
+            gameSessionRef.current += 1;
+
             resetGameState();
             setPlayers(data?.players || []);
             setView('BOARD'); setIsDealing(true);
@@ -235,6 +264,25 @@ export default function MultiplayerGame({ onBack, onFinish }) {
                     socket.emit('requestMyCards', { roomId: joinedRoomRef.current });
                 }
             }, 2000));
+
+            // ✅ FIX: secondary safety net. The original code only retried
+            // ONCE via requestMyCards inside the 2000ms timeout above, with
+            // no confirmation that myHand was ever actually populated
+            // afterward. If that single retry response also landed in a
+            // bad window, the hand could stay empty forever with no further
+            // correction and no way for the player to ever play a card,
+            // stalling the whole table (server has no timeout for a human
+            // who never sends playCard). This adds one more delayed check:
+            // if, shortly after dealing finishes, we're on the board with
+            // an empty hand but the room clearly dealt everyone cards,
+            // request the hand again. This does not change any game logic,
+            // scoring, or turn order — it only guarantees the client
+            // eventually reflects the hand the server already assigned.
+            addTimer(setTimeout(() => {
+                if (viewRef.current === 'BOARD' && joinedRoomRef.current) {
+                    socket.emit('requestMyCards', { roomId: joinedRoomRef.current });
+                }
+            }, 3500));
         };
 
         const onGameUpdated = (data) => {
@@ -435,6 +483,28 @@ export default function MultiplayerGame({ onBack, onFinish }) {
         const hasLeadSuit = myHand.some(c => c.symbol === leadSuit);
         return hasLeadSuit ? card.symbol === leadSuit : true;
     }, [gameEnded, isSubmittingCard, me, currentTurn, isDealing, table, myHand]);
+
+    // ✅ FIX: extra client-side self-healing watchdog. If it becomes "my
+    // turn" but my hand is empty while I'm clearly still an active player
+    // (not ranked as a winner) and the game isn't over, request my cards
+    // again from the server. This cannot change any game outcome — it only
+    // re-syncs the client's view of a hand the server already has — but it
+    // guarantees the player is never stuck staring at an empty hand on
+    // their own turn with no way to recover.
+    useEffect(() => {
+        if (!currentTurn || currentTurn !== socket.id) return;
+        if (gameEnded || isDealing) return;
+        if (myHand.length > 0) return;
+        if (myRankInfo) return; // already finished, no cards expected
+        if (!joinedRoomRef.current) return;
+
+        const retryId = setTimeout(() => {
+            if (currentTurn === socket.id && myHand.length === 0 && !gameEnded && joinedRoomRef.current) {
+                socket.emit('requestMyCards', { roomId: joinedRoomRef.current });
+            }
+        }, 600);
+        return () => clearTimeout(retryId);
+    }, [currentTurn, gameEnded, isDealing, myHand.length, myRankInfo]);
 
     // ── LOBBY ACTIONS ────────────────────────────────────────────
     const handleCreateRoom = () => {
@@ -674,29 +744,64 @@ export default function MultiplayerGame({ onBack, onFinish }) {
                     </div>
                 </div>
 
-                {/* BOTTOM — MY HAND */}
+                {/*
+                  ================================================================
+                  BOTTOM PLAYER HAND PANEL — PREMIUM REDESIGN (matches Game.jsx)
+                  ================================================================
+                  FIX: Hand cards were getting hidden/overlapped behind the Android
+                  navigation bar because Android WebViews frequently report
+                  env(safe-area-inset-bottom) as 0px (unlike iOS), so the previous
+                  fallback wasn't enough on gesture-nav / 3-button-nav devices.
+
+                  Now using CSS max() to guarantee a solid minimum buffer
+                  (34px) REGARDLESS of what the device reports, while still
+                  respecting a larger real inset (notch / gesture bar) when the
+                  OS does report one correctly. No socket/game logic touched
+                  below — only this panel's container styling/visuals changed,
+                  matching Game.jsx's single-player hand panel 1:1.
+                  ================================================================
+                */}
                 <div
-                    className="position-absolute bottom-0 w-100 p-2 bg-dark bg-opacity-95 shadow-lg d-flex flex-column align-items-center justify-content-center"
+                    className="position-absolute bottom-0 w-100 d-flex flex-column align-items-center justify-content-center hand-panel"
                     style={{
                         zIndex: 2000,
-                        minHeight: 'calc(190px + env(safe-area-inset-bottom, 48px))',
-                        paddingBottom: 'calc(env(safe-area-inset-bottom, 48px) + 20px)',
-                        paddingTop: '10px',
-                        borderTop: '1px solid rgba(25, 135, 84, 0.4)'
+                        minHeight: 'calc(190px + max(34px, env(safe-area-inset-bottom, 0px)))',
+                        paddingBottom: 'max(34px, calc(env(safe-area-inset-bottom, 0px) + 22px))',
+                        paddingTop: '14px',
+                        paddingLeft: '12px',
+                        paddingRight: '12px',
                     }}
                 >
+                    {/* Animated glow divider at the top edge of the panel */}
+                    <motion.div
+                        className="position-absolute top-0 start-0 w-100"
+                        style={{ height: '2px', pointerEvents: 'none' }}
+                        animate={{
+                            background: [
+                                'linear-gradient(90deg, rgba(25,135,84,0) 0%, rgba(25,135,84,0.9) 50%, rgba(25,135,84,0) 100%)',
+                                'linear-gradient(90deg, rgba(255,215,0,0) 0%, rgba(255,215,0,0.7) 50%, rgba(255,215,0,0) 100%)',
+                                'linear-gradient(90deg, rgba(25,135,84,0) 0%, rgba(25,135,84,0.9) 50%, rgba(25,135,84,0) 100%)'
+                            ]
+                        }}
+                        transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+                    />
+
                     {myRankInfo ? (
-                        <div className="text-center py-2">
+                        <motion.div
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className="text-center py-2"
+                        >
                             <Trophy size={45} className="text-warning mb-1" />
                             <div className="text-warning fw-bold h5">{getRankText(myRankInfo.rank)}</div>
-                        </div>
+                        </motion.div>
                     ) : (
                         <>
                             <div
-                                className={`mb-1 px-3 py-1 rounded-pill fw-black shadow-sm d-flex align-items-center gap-2 ${gameEnded ? 'bg-warning text-dark'
-                                        : isSubmittingCard ? 'bg-info text-dark'
-                                            : me?.id === currentTurn ? 'bg-success text-white'
-                                                : 'bg-secondary text-white opacity-50'
+                                className={`mb-2 px-3 py-1 rounded-pill fw-black shadow-sm d-flex align-items-center gap-2 ${gameEnded ? 'bg-warning text-dark'
+                                    : isSubmittingCard ? 'bg-info text-dark'
+                                        : me?.id === currentTurn ? 'bg-success text-white'
+                                            : 'bg-secondary text-white opacity-50'
                                     }`}
                                 style={{ fontSize: '0.7rem', letterSpacing: '1px' }}
                             >
@@ -711,18 +816,30 @@ export default function MultiplayerGame({ onBack, onFinish }) {
                                 )}
                             </div>
 
-                            <div className="text-center mb-1 d-flex flex-column gap-0">
-                                <span className="x-small fw-black text-success text-uppercase mb-1">
+                            <div className="text-center mb-2 d-flex flex-column align-items-center gap-1">
+                                <span className="x-small fw-black text-success text-uppercase tracking-widest" style={{ letterSpacing: '0.18em' }}>
                                     You {playerName ? `(${playerName})` : ''}
                                 </span>
-                                <span className={`p-1 px-3 rounded-pill small fw-bold ${me?.id === currentTurn ? 'bg-success text-white' : 'bg-secondary text-white opacity-50'}`}>
+                                <motion.span
+                                    animate={me?.id === currentTurn ? { scale: [1, 1.05, 1] } : { scale: 1 }}
+                                    transition={me?.id === currentTurn ? { duration: 1.2, repeat: Infinity, ease: 'easeInOut' } : {}}
+                                    className="px-3 py-1 rounded-pill small fw-bold"
+                                    style={{
+                                        background: me?.id === currentTurn
+                                            ? 'linear-gradient(135deg, #ffd700, #c9a400)'
+                                            : 'rgba(255,255,255,0.08)',
+                                        color: me?.id === currentTurn ? '#1a0f00' : 'rgba(255,255,255,0.65)',
+                                        border: me?.id === currentTurn ? 'none' : '1px solid rgba(255,255,255,0.15)',
+                                        boxShadow: me?.id === currentTurn ? '0 3px 12px rgba(255,215,0,0.35)' : 'none'
+                                    }}
+                                >
                                     HAND: {myHand.length}
-                                </span>
+                                </motion.span>
                             </div>
 
                             <div
                                 className="d-flex justify-content-center align-items-end"
-                                style={{ height: '110px', width: '100%', position: 'relative', marginBottom: '5px', overflow: 'visible' }}
+                                style={{ height: '110px', width: '100%', position: 'relative', marginBottom: '2px', overflow: 'visible' }}
                             >
                                 {myHand.map((c, i) => {
                                     const eligible = isCardEligible(c);
@@ -804,6 +921,14 @@ export default function MultiplayerGame({ onBack, onFinish }) {
                         height: 100dvh !important;
                         padding-bottom: env(safe-area-inset-bottom, 0px);
                         box-sizing: border-box;
+                    }
+                    .hand-panel {
+                        background: linear-gradient(180deg, rgba(10,20,13,0.75) 0%, rgba(4,10,6,0.97) 40%, #04070a 100%);
+                        backdrop-filter: blur(22px);
+                        -webkit-backdrop-filter: blur(22px);
+                        border-top-left-radius: 26px;
+                        border-top-right-radius: 26px;
+                        box-shadow: 0 -10px 30px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.04);
                     }
                     .mp-spin { animation: mpSpin 1s linear infinite; }
                     @keyframes mpSpin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }

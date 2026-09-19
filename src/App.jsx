@@ -4,6 +4,7 @@ import 'bootstrap/dist/css/bootstrap.min.css';
 import './App.css';
 import { App as CapApp } from '@capacitor/app';
 import { Toast } from '@capacitor/toast';
+import { Network } from '@capacitor/network';
 
 
 // Pages
@@ -11,6 +12,9 @@ import Home from './pages/Home';
 import Game from './pages/Game';
 import Results from './pages/Results';
 import MultiplayerGame from './pages/MultiplayerGame';
+
+// Components
+import AppOpenAd from './components/AppOpenAd';
 
 
 export default function App() {
@@ -22,6 +26,8 @@ export default function App() {
   const [lastBackPress, setLastBackPress] = useState(0);
   const [offlineGameKey, setOfflineGameKey] = useState(0);
   const [multiplayerKey, setMultiplayerKey] = useState(0);
+  const [isOffline, setIsOffline] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
 
 
   const resetToHome = () => {
@@ -30,6 +36,48 @@ export default function App() {
     setShowMultiplayerExitModal(false);
     setScene('HOME');
   };
+
+
+  const handleRetryConnection = async () => {
+    if (isRetrying) return;
+    setIsRetrying(true);
+    try {
+      const status = await Network.getStatus();
+      setIsOffline(!status.connected);
+      if (!status.connected) {
+        Toast.show({ text: 'Still no connection', duration: 'short' });
+      }
+    } catch (e) {
+      // ignore
+    } finally {
+      setTimeout(() => setIsRetrying(false), 600);
+    }
+  };
+
+
+  // Network connectivity listener (using Capacitor Network plugin for accuracy on device)
+  useEffect(() => {
+    let listenerHandle;
+
+    const checkInitialStatus = async () => {
+      const status = await Network.getStatus();
+      setIsOffline(!status.connected);
+    };
+
+    checkInitialStatus();
+
+    Network.addListener('networkStatusChange', (status) => {
+      setIsOffline(!status.connected);
+    }).then((handle) => {
+      listenerHandle = handle;
+    });
+
+    return () => {
+      if (listenerHandle) {
+        listenerHandle.remove();
+      }
+    };
+  }, []);
 
 
   useEffect(() => {
@@ -75,17 +123,36 @@ export default function App() {
     };
 
 
-    CapApp.addListener('backButton', handler);
+    // Keep the handle of THIS listener, so we remove only this one later.
+    // (CapApp.removeAllListeners() deletes ALL App listeners, also the app open ad "return to app" listener)
+    let backHandle = null;
+    let removed = false;
+
+    CapApp.addListener('backButton', handler).then((handle) => {
+      if (removed) {
+        handle.remove();
+      } else {
+        backHandle = handle;
+      }
+    });
 
 
     return () => {
-      CapApp.removeAllListeners('backButton');
+      removed = true;
+      if (backHandle) {
+        backHandle.remove();
+      }
     };
   }, [scene]);
 
 
   useEffect(() => {
     if (scene === 'SPLASH') {
+      // Don't progress or move to Home while offline — wait until connection is back
+      if (isOffline) {
+        return;
+      }
+
       const duration = 3000;
       const intervalTime = 30;
       const increment = 100 / (duration / intervalTime);
@@ -105,7 +172,7 @@ export default function App() {
 
       return () => clearInterval(timer);
     }
-  }, [scene]);
+  }, [scene, isOffline]);
 
 
   const handleMatchFinish = (resultData) => {
@@ -157,6 +224,9 @@ export default function App() {
 
   return (
     <div className="app-container vh-100 overflow-hidden position-relative bg-dark text-white">
+      {/* APP OPEN AD — no UI. Loads during splash, shows after splash (only on HOME / RESULTS, never while playing or offline) */}
+      <AppOpenAd scene={scene} isOffline={isOffline} />
+
       <AnimatePresence mode="wait">
         {scene === 'SPLASH' && (
           <motion.div
@@ -172,11 +242,18 @@ export default function App() {
           >
             <motion.img
               initial={{ y: 20, opacity: 0 }}
-              animate={{ y: 0, opacity: 1 }}
+              animate={{
+                y: 0,
+                opacity: 1,
+                filter: isOffline
+                  ? 'grayscale(0.6) drop-shadow(0px 10px 15px rgba(0,0,0,0.5))'
+                  : 'grayscale(0) drop-shadow(0px 10px 15px rgba(0,0,0,0.5))'
+              }}
+              transition={{ duration: 0.6 }}
               src="assets/donkey.png"
               alt="Donkey play Logo"
               className="mb-4 shadow-lg"
-              style={{ width: '200px', filter: 'drop-shadow(0px 10px 15px rgba(0,0,0,0.5))' }}
+              style={{ width: '200px' }}
               onError={(e) => { e.target.src = "https://via.placeholder.com/150?text=Donky+Play"; }}
             />
 
@@ -297,6 +374,180 @@ export default function App() {
                 </motion.div>
               )}
             </AnimatePresence>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+
+      {/* GLOBAL OFFLINE OVERLAY — shows on top of ANY screen (Home, Game, Multiplayer, Results, Splash) the moment internet drops, in real time */}
+      <AnimatePresence>
+        {isOffline && (
+          <motion.div
+            key="global-offline-overlay"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.35 }}
+            className="position-fixed top-0 start-0 w-100 h-100 d-flex align-items-center justify-content-center px-3"
+            style={{
+              zIndex: 999999,
+              background: 'rgba(3, 8, 4, 0.86)',
+              backdropFilter: 'blur(6px)',
+              WebkitBackdropFilter: 'blur(6px)'
+            }}
+          >
+            <motion.div
+              key="offline-card"
+              initial={{ opacity: 0, y: 24, scale: 0.92 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: -16, scale: 0.95 }}
+              transition={{ type: 'spring', stiffness: 260, damping: 22 }}
+              className="w-100"
+              style={{ maxWidth: '380px' }}
+            >
+              <motion.div
+                className="position-relative p-4 rounded-4 text-center overflow-hidden"
+                style={{
+                  background: 'rgba(255,255,255,0.06)',
+                  backdropFilter: 'blur(18px)',
+                  WebkitBackdropFilter: 'blur(18px)',
+                  border: '1px solid rgba(255,92,92,0.35)',
+                  boxShadow: '0 8px 32px rgba(0,0,0,0.45)'
+                }}
+              >
+                {/* Animated glow border pulse */}
+                <motion.div
+                  className="position-absolute top-0 start-0 w-100 h-100"
+                  style={{
+                    borderRadius: 'inherit',
+                    boxShadow: '0 0 0px rgba(255,92,92,0.0)',
+                    pointerEvents: 'none'
+                  }}
+                  animate={{
+                    boxShadow: [
+                      '0 0 0px rgba(255,92,92,0.0)',
+                      '0 0 22px rgba(255,92,92,0.35)',
+                      '0 0 0px rgba(255,92,92,0.0)'
+                    ]
+                  }}
+                  transition={{ duration: 2.2, repeat: Infinity, ease: 'easeInOut' }}
+                />
+
+
+                {/* Radar / wifi-off icon */}
+                <div
+                  className="position-relative mx-auto mb-3 d-flex align-items-center justify-content-center"
+                  style={{ width: '84px', height: '84px' }}
+                >
+                  {[0, 1, 2].map((ring) => (
+                    <motion.span
+                      key={ring}
+                      className="position-absolute rounded-circle"
+                      style={{
+                        width: '100%',
+                        height: '100%',
+                        border: '1.5px solid rgba(255,92,92,0.55)'
+                      }}
+                      animate={{
+                        scale: [0.5, 1.6],
+                        opacity: [0.6, 0]
+                      }}
+                      transition={{
+                        duration: 2,
+                        repeat: Infinity,
+                        ease: 'easeOut',
+                        delay: ring * 0.55
+                      }}
+                    />
+                  ))}
+
+
+                  <motion.div
+                    className="rounded-circle d-flex align-items-center justify-content-center"
+                    style={{
+                      width: '56px',
+                      height: '56px',
+                      background: 'linear-gradient(145deg, #2a0d0d, #1a0505)',
+                      border: '1px solid rgba(255,92,92,0.5)',
+                      zIndex: 2
+                    }}
+                    animate={{ scale: [1, 1.06, 1] }}
+                    transition={{ duration: 1.6, repeat: Infinity, ease: 'easeInOut' }}
+                  >
+                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                      <path
+                        d="M1 9L3 11.5C7.5 7 16.5 7 21 11.5L23 9C17 3 7 3 1 9Z"
+                        fill="#ff5c5c"
+                        opacity="0.35"
+                      />
+                      <path
+                        d="M5 13L7 15.3C9.7 12.9 14.3 12.9 17 15.3L19 13C15 9.5 9 9.5 5 13Z"
+                        fill="#ff5c5c"
+                        opacity="0.55"
+                      />
+                      <circle cx="12" cy="18.5" r="1.8" fill="#ff5c5c" />
+                      <line x1="2.5" y1="2.5" x2="21.5" y2="21.5" stroke="#ff5c5c" strokeWidth="2" strokeLinecap="round" />
+                    </svg>
+                  </motion.div>
+                </div>
+
+
+                <h5 className="fw-bold mb-2" style={{ color: '#ff8080', letterSpacing: '0.02em' }}>
+                  No Internet Connection
+                </h5>
+                <p className="small text-light-emphasis mb-1" style={{ opacity: 0.85, lineHeight: 1.5 }}>
+                  Please check your internet connection.
+                </p>
+
+
+                {/* Reconnecting status with animated dots */}
+                <div className="d-flex align-items-center justify-content-center gap-1 mb-4 mt-2">
+                  <span className="small text-secondary fw-semibold">Reconnecting</span>
+                  {[0, 1, 2].map((dot) => (
+                    <motion.span
+                      key={dot}
+                      className="rounded-circle"
+                      style={{ width: '4px', height: '4px', background: '#ffd700', display: 'inline-block' }}
+                      animate={{ opacity: [0.2, 1, 0.2], y: [0, -3, 0] }}
+                      transition={{ duration: 1.1, repeat: Infinity, delay: dot * 0.18, ease: 'easeInOut' }}
+                    />
+                  ))}
+                </div>
+
+
+                <motion.button
+                  whileTap={{ scale: 0.94 }}
+                  whileHover={{ scale: 1.03 }}
+                  onClick={handleRetryConnection}
+                  disabled={isRetrying}
+                  className="btn fw-bold rounded-pill px-4 py-2 border-0 d-inline-flex align-items-center gap-2"
+                  style={{
+                    background: 'linear-gradient(135deg, #ff5c5c, #c92c2c)',
+                    color: '#fff',
+                    fontSize: '0.85rem',
+                    boxShadow: '0 4px 14px rgba(255,92,92,0.35)',
+                    opacity: isRetrying ? 0.75 : 1
+                  }}
+                >
+                  <motion.span
+                    animate={isRetrying ? { rotate: 360 } : { rotate: 0 }}
+                    transition={isRetrying ? { duration: 0.7, repeat: Infinity, ease: 'linear' } : {}}
+                    style={{ display: 'inline-flex' }}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                      <path
+                        d="M4 12a8 8 0 0 1 14.9-4M20 12a8 8 0 0 1-14.9 4"
+                        stroke="#fff"
+                        strokeWidth="2.2"
+                        strokeLinecap="round"
+                      />
+                      <path d="M18 4v5h-5M6 20v-5h5" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </motion.span>
+                  {isRetrying ? 'Checking...' : 'Retry Now'}
+                </motion.button>
+              </motion.div>
+            </motion.div>
           </motion.div>
         )}
       </AnimatePresence>

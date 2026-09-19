@@ -1,7 +1,8 @@
 import React from 'react';
-import { Trophy, RotateCcw, Medal } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Trophy, RotateCcw, Medal, Sparkles } from 'lucide-react';
 
-const MedalIcon = ({ rank }) => {
+const MedalIcon = ({ rank, size = 28 }) => {
     const colors = {
         1: '#FFD700',
         2: '#C0C0C0',
@@ -9,8 +10,26 @@ const MedalIcon = ({ rank }) => {
         4: '#dc3545'
     };
 
-    return <Medal size={28} style={{ color: colors[rank] || '#ffffff' }} />;
+    return <Medal size={size} style={{ color: colors[rank] || '#ffffff' }} />;
 };
+
+// Small floating particle used for the celebratory background
+const Particle = ({ delay, left, emoji }) => (
+    <motion.div
+        initial={{ y: '110vh', opacity: 0, rotate: 0 }}
+        animate={{ y: '-10vh', opacity: [0, 1, 1, 0], rotate: 360 }}
+        transition={{ duration: 5 + Math.random() * 3, delay, repeat: Infinity, ease: 'linear' }}
+        style={{
+            position: 'absolute',
+            left: `${left}%`,
+            fontSize: `${14 + Math.random() * 14}px`,
+            pointerEvents: 'none',
+            zIndex: 1
+        }}
+    >
+        {emoji}
+    </motion.div>
+);
 
 export default function Results({ winners = [], players = [], onRestart }) {
     const safeWinners = Array.isArray(winners)
@@ -64,53 +83,209 @@ export default function Results({ winners = [], players = [], onRestart }) {
             return donkeyId ? { id: donkeyId, rank: 4 } : null;
         })();
 
+    const podiumWinners = safeWinners.filter((w) => w.rank !== 4);
+
+    const particles = ['🎉', '✨', '🏆', '⭐', '🎊'];
+
     return (
-        <div className="vh-100 d-flex flex-column align-items-center justify-content-center p-4">
-            <div
-                className="bg-dark p-4 rounded-4 border border-warning shadow-lg text-center w-100"
-                style={{ maxWidth: '450px' }}
+        <div
+            className="vh-100 d-flex flex-column align-items-center justify-content-center p-4 position-relative overflow-hidden"
+            style={{
+                background: 'radial-gradient(ellipse at top, #1a1508 0%, #050505 65%)'
+            }}
+        >
+            {/* Floating celebratory particles */}
+            {Array.from({ length: 14 }).map((_, i) => (
+                <Particle
+                    key={i}
+                    delay={i * 0.4}
+                    left={(i * 7) % 100}
+                    emoji={particles[i % particles.length]}
+                />
+            ))}
+
+            {/* Soft glow behind the card */}
+            <motion.div
+                animate={{ opacity: [0.4, 0.7, 0.4], scale: [1, 1.08, 1] }}
+                transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
+                style={{
+                    position: 'absolute',
+                    width: '420px',
+                    height: '420px',
+                    borderRadius: '50%',
+                    background: 'radial-gradient(circle, rgba(255,215,0,0.18) 0%, rgba(255,215,0,0) 70%)',
+                    zIndex: 0
+                }}
+            />
+
+            <motion.div
+                initial={{ opacity: 0, y: 40, scale: 0.92 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                transition={{ duration: 0.55, ease: 'easeOut' }}
+                className="p-4 rounded-4 text-center w-100 position-relative"
+                style={{
+                    maxWidth: '450px',
+                    zIndex: 2,
+                    background: 'linear-gradient(180deg, rgba(28,22,10,0.96) 0%, rgba(10,8,4,0.98) 100%)',
+                    border: '1px solid rgba(255,215,0,0.35)',
+                    boxShadow: '0 20px 60px rgba(0,0,0,0.6), 0 0 40px rgba(255,215,0,0.08) inset',
+                    backdropFilter: 'blur(10px)'
+                }}
             >
-                <Trophy size={60} className="text-warning mb-3" />
-                <h2 className="text-warning fw-bold mb-4">MATCH RESULTS</h2>
+                <motion.div
+                    initial={{ scale: 0, rotate: -30 }}
+                    animate={{ scale: 1, rotate: 0 }}
+                    transition={{ delay: 0.15, type: 'spring', stiffness: 260, damping: 14 }}
+                    className="d-inline-block position-relative mb-2"
+                >
+                    <motion.div
+                        animate={{ opacity: [0.3, 0.9, 0.3] }}
+                        transition={{ duration: 2, repeat: Infinity }}
+                        style={{
+                            position: 'absolute',
+                            inset: '-14px',
+                            borderRadius: '50%',
+                            background: 'radial-gradient(circle, rgba(255,215,0,0.5) 0%, rgba(255,215,0,0) 70%)'
+                        }}
+                    />
+                    <Trophy size={60} className="text-warning position-relative" />
+                </motion.div>
+
+                <motion.h2
+                    initial={{ opacity: 0, letterSpacing: '0.4em' }}
+                    animate={{ opacity: 1, letterSpacing: '0.08em' }}
+                    transition={{ delay: 0.3, duration: 0.6 }}
+                    className="fw-bold mb-4"
+                    style={{
+                        background: 'linear-gradient(90deg, #ffd700, #fff3c4, #ffd700)',
+                        WebkitBackgroundClip: 'text',
+                        WebkitTextFillColor: 'transparent',
+                        fontSize: '1.5rem'
+                    }}
+                >
+                    MATCH RESULTS
+                </motion.h2>
 
                 <div className="d-flex flex-column gap-2 mb-4 text-start">
-                    {safeWinners
-                        .filter((w) => w.rank !== 4)
-                        .map((w, index) => (
-                            <div
+                    <AnimatePresence>
+                        {podiumWinners.map((w, index) => (
+                            <motion.div
                                 key={w.id || index}
-                                className="d-flex align-items-center justify-content-between bg-black bg-opacity-40 p-3 rounded-pill border border-secondary"
+                                initial={{ opacity: 0, x: -40 }}
+                                animate={{ opacity: 1, x: 0 }}
+                                transition={{ delay: 0.45 + index * 0.15, type: 'spring', stiffness: 220, damping: 18 }}
+                                whileHover={{ scale: 1.02 }}
+                                className="d-flex align-items-center justify-content-between p-3 rounded-pill position-relative overflow-hidden"
+                                style={{
+                                    background: w.rank === 1
+                                        ? 'linear-gradient(90deg, rgba(255,215,0,0.18), rgba(0,0,0,0.3))'
+                                        : 'rgba(255,255,255,0.05)',
+                                    border: w.rank === 1
+                                        ? '1px solid rgba(255,215,0,0.5)'
+                                        : '1px solid rgba(255,255,255,0.12)',
+                                    boxShadow: w.rank === 1 ? '0 0 20px rgba(255,215,0,0.15)' : 'none'
+                                }}
                             >
-                                <div className="d-flex align-items-center gap-2 overflow-hidden">
-                                    <MedalIcon rank={w.rank} />
-                                    <span className="fw-bold text-truncate">
+                                {w.rank === 1 && (
+                                    <motion.div
+                                        animate={{ x: ['-100%', '200%'] }}
+                                        transition={{ duration: 2.2, repeat: Infinity, ease: 'easeInOut', repeatDelay: 1 }}
+                                        style={{
+                                            position: 'absolute',
+                                            top: 0, bottom: 0, width: '40%',
+                                            background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent)',
+                                            zIndex: 0
+                                        }}
+                                    />
+                                )}
+
+                                <div className="d-flex align-items-center gap-2 overflow-hidden position-relative" style={{ zIndex: 1 }}>
+                                    <motion.div
+                                        animate={w.rank === 1 ? { rotate: [0, -8, 8, 0] } : {}}
+                                        transition={{ duration: 1.4, repeat: Infinity, repeatDelay: 1.5 }}
+                                    >
+                                        <MedalIcon rank={w.rank} />
+                                    </motion.div>
+                                    <span className="fw-bold text-truncate text-white">
                                         {getPlayerName(w, index)}
                                     </span>
                                 </div>
 
-                                <span className="small text-secondary ms-2">
+                                <span
+                                    className="small fw-bold ms-2 position-relative"
+                                    style={{
+                                        zIndex: 1,
+                                        color: w.rank === 1 ? '#ffd700' : 'rgba(255,255,255,0.55)',
+                                        letterSpacing: '0.08em'
+                                    }}
+                                >
                                     {getRankText(w.rank)}
                                 </span>
-                            </div>
+                            </motion.div>
                         ))}
+                    </AnimatePresence>
 
                     {donkeyWinner && (
-                        <div className="mt-3 p-3 bg-danger bg-opacity-20 rounded-4 border border-danger text-center shadow">
-                            <div className="display-4">🫏</div>
-                            <div className="h4 fw-bold text-danger mb-0">
-                                DONKEY: {getPlayerName(donkeyWinner, safeWinners.length)}
-                            </div>
-                        </div>
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.6, rotate: -6 }}
+                            animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                            transition={{ delay: 0.45 + podiumWinners.length * 0.15 + 0.25, type: 'spring', stiffness: 200, damping: 12 }}
+                            className="mt-3 p-3 rounded-4 text-center position-relative overflow-hidden"
+                            style={{
+                                background: 'linear-gradient(160deg, rgba(220,53,69,0.25), rgba(80,10,15,0.35))',
+                                border: '1px solid rgba(220,53,69,0.6)',
+                                boxShadow: '0 0 30px rgba(220,53,69,0.25)'
+                            }}
+                        >
+                            <motion.div
+                                animate={{ opacity: [0.15, 0.4, 0.15] }}
+                                transition={{ duration: 1.6, repeat: Infinity }}
+                                style={{
+                                    position: 'absolute',
+                                    inset: 0,
+                                    background: 'radial-gradient(circle, rgba(220,53,69,0.4) 0%, rgba(220,53,69,0) 70%)'
+                                }}
+                            />
+
+                            <motion.div
+                                animate={{ rotate: [0, -10, 10, -10, 10, 0] }}
+                                transition={{ delay: 1, duration: 0.7, repeat: Infinity, repeatDelay: 2.3 }}
+                                className="display-4 position-relative"
+                                style={{ zIndex: 1 }}
+                            >
+                                🫏
+                            </motion.div>
+
+                            <motion.div
+                                initial={{ opacity: 0 }}
+                                animate={{ opacity: 1 }}
+                                transition={{ delay: 1 }}
+                                className="d-flex align-items-center justify-content-center gap-2 position-relative"
+                                style={{ zIndex: 1 }}
+                            >
+                                <Sparkles size={16} className="text-danger" />
+                                <span className="h4 fw-bold text-danger mb-0" style={{ letterSpacing: '0.05em' }}>
+                                    DONKEY: {getPlayerName(donkeyWinner, safeWinners.length)}
+                                </span>
+                                <Sparkles size={16} className="text-danger" />
+                            </motion.div>
+                        </motion.div>
                     )}
                 </div>
 
-                <button
-                    className="btn btn-warning btn-lg w-100 fw-bold rounded-pill mt-2 shadow"
+                <motion.button
+                    initial={{ opacity: 0, y: 15 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.9 }}
+                    whileHover={{ scale: 1.03, boxShadow: '0 6px 24px rgba(255,215,0,0.4)' }}
+                    whileTap={{ scale: 0.97 }}
+                    className="btn btn-warning btn-lg w-100 fw-bold rounded-pill mt-2 border-0"
+                    style={{ boxShadow: '0 4px 16px rgba(255,215,0,0.25)' }}
                     onClick={onRestart}
                 >
                     <RotateCcw size={20} className="me-2" /> REPLAY GAME
-                </button>
-            </div>
+                </motion.button>
+            </motion.div>
         </div>
     );
 }

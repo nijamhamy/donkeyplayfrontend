@@ -215,7 +215,7 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
         try {
             adLoading.current = true;
             await AdMob.prepareInterstitial({
-                adId: 'ca-app-pub-8553625771070050/6609130205',
+                adId: 'ca-app-pub-8553625771070050/7057056419',
                 isTesting: false,
             });
             adPreloaded.current = true;
@@ -975,32 +975,81 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
             </div>
 
 
+            {/*
+              ================================================================
+              BOTTOM PLAYER HAND PANEL — PREMIUM REDESIGN
+              ================================================================
+              FIX: Hand cards were getting hidden/overlapped behind the Android
+              navigation bar because Android WebViews frequently report
+              env(safe-area-inset-bottom) as 0px (unlike iOS), so the previous
+              fallback wasn't enough on gesture-nav / 3-button-nav devices.
+
+              Now using CSS max() to guarantee a solid minimum buffer
+              (34px) REGARDLESS of what the device reports, while still
+              respecting a larger real inset (notch / gesture bar) when the
+              OS does report one correctly. No game logic touched below —
+              only this panel's container styling/visuals changed.
+              ================================================================
+            */}
             <div
-                className="position-absolute bottom-0 w-100 p-2 bg-dark bg-opacity-95 shadow-lg d-flex flex-column align-items-center justify-content-center"
+                className="position-absolute bottom-0 w-100 d-flex flex-column align-items-center justify-content-center hand-panel"
                 style={{
                     zIndex: 2000,
-                    minHeight: 'calc(190px + env(safe-area-inset-bottom, 48px))',
-                    paddingBottom: 'calc(env(safe-area-inset-bottom, 48px) + 20px)',
-                    paddingTop: '10px',
-                    borderTop: '1px solid rgba(25, 135, 84, 0.4)'
+                    minHeight: 'calc(190px + max(34px, env(safe-area-inset-bottom, 0px)))',
+                    paddingBottom: 'max(34px, calc(env(safe-area-inset-bottom, 0px) + 22px))',
+                    paddingTop: '14px',
+                    paddingLeft: '12px',
+                    paddingRight: '12px',
                 }}
             >
+                {/* Animated glow divider at the top edge of the panel */}
+                <motion.div
+                    className="position-absolute top-0 start-0 w-100"
+                    style={{ height: '2px', pointerEvents: 'none' }}
+                    animate={{
+                        background: [
+                            'linear-gradient(90deg, rgba(25,135,84,0) 0%, rgba(25,135,84,0.9) 50%, rgba(25,135,84,0) 100%)',
+                            'linear-gradient(90deg, rgba(255,215,0,0) 0%, rgba(255,215,0,0.7) 50%, rgba(255,215,0,0) 100%)',
+                            'linear-gradient(90deg, rgba(25,135,84,0) 0%, rgba(25,135,84,0.9) 50%, rgba(25,135,84,0) 100%)'
+                        ]
+                    }}
+                    transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
+                />
+
                 {myRankInfo ? (
-                    <div className="text-center py-2">
+                    <motion.div
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        className="text-center py-2"
+                    >
                         <Trophy size={45} className="text-warning mb-1" />
                         <div className="text-warning fw-bold h5">{getProfileLabel('p1')}</div>
-                    </div>
+                    </motion.div>
                 ) : (
                     <>
-                        <div className="text-center mb-1 d-flex flex-column gap-0">
-                            <span className="x-small fw-black text-success text-uppercase mb-1 tracking-widest">You</span>
-                            <span className={`p-1 px-3 rounded-pill small fw-bold ${turn === 'p1' ? 'bg-success text-white' : 'bg-secondary text-white opacity-50'}`}>
-                                HAND: {hands.p1.length}
+                        <div className="text-center mb-2 d-flex flex-column align-items-center gap-1">
+                            <span className="x-small fw-black text-success text-uppercase tracking-widest" style={{ letterSpacing: '0.18em' }}>
+                                You
                             </span>
+                            <motion.span
+                                animate={turn === 'p1' ? { scale: [1, 1.05, 1] } : { scale: 1 }}
+                                transition={turn === 'p1' ? { duration: 1.2, repeat: Infinity, ease: 'easeInOut' } : {}}
+                                className="px-3 py-1 rounded-pill small fw-bold"
+                                style={{
+                                    background: turn === 'p1'
+                                        ? 'linear-gradient(135deg, #ffd700, #c9a400)'
+                                        : 'rgba(255,255,255,0.08)',
+                                    color: turn === 'p1' ? '#1a0f00' : 'rgba(255,255,255,0.65)',
+                                    border: turn === 'p1' ? 'none' : '1px solid rgba(255,255,255,0.15)',
+                                    boxShadow: turn === 'p1' ? '0 3px 12px rgba(255,215,0,0.35)' : 'none'
+                                }}
+                            >
+                                HAND: {hands.p1.length}
+                            </motion.span>
                         </div>
 
 
-                        <div className="d-flex justify-content-center align-items-end" style={{ height: '110px', width: '100%', position: 'relative', marginBottom: '5px' }}>
+                        <div className="d-flex justify-content-center align-items-end" style={{ height: '110px', width: '100%', position: 'relative', marginBottom: '2px' }}>
                             {hands.p1.map((c, i) => {
                                 const eligible = isCardEligible(c, hands.p1);
                                 const cardWidth = 58;
@@ -1043,7 +1092,19 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
 
 
             {externalShowExit && <ExitModal onCancel={() => setExternalShowExit(false)} onConfirm={onExit} />}
-            <style>{`.fw-black { font-weight: 900; } .x-small { font-size: 0.65rem; } .game-root { height: 100dvh !important; padding-bottom: env(safe-area-inset-bottom, 0px); box-sizing: border-box; }`}</style>
+            <style>{`
+                .fw-black { font-weight: 900; }
+                .x-small { font-size: 0.65rem; }
+                .game-root { height: 100dvh !important; padding-bottom: env(safe-area-inset-bottom, 0px); box-sizing: border-box; }
+                .hand-panel {
+                    background: linear-gradient(180deg, rgba(10,20,13,0.75) 0%, rgba(4,10,6,0.97) 40%, #04070a 100%);
+                    backdrop-filter: blur(22px);
+                    -webkit-backdrop-filter: blur(22px);
+                    border-top-left-radius: 26px;
+                    border-top-right-radius: 26px;
+                    box-shadow: 0 -10px 30px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.04);
+                }
+            `}</style>
         </div>
     );
 }
