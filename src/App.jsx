@@ -17,6 +17,24 @@ import MultiplayerGame from './pages/MultiplayerGame';
 import AppOpenAd from './components/AppOpenAd';
 
 
+// ---------- Splash 3D visual-only constants (no game logic) ----------
+const SPLASH_SUITS = [
+  { s: '♠', red: false },
+  { s: '♥', red: true },
+  { s: '♣', red: false },
+  { s: '♦', red: true },
+];
+const SPLASH_TITLE = 'Donkey play'.split('');
+const SPLASH_PARTICLES = Array.from({ length: 14 }, (_, i) => ({
+  left: 6 + ((i * 37) % 88),
+  size: 14 + ((i * 7) % 20),
+  dur: 9 + ((i * 3) % 8),
+  delay: -((i * 1.7) % 10),
+  s: ['♠', '♥', '♦', '♣'][i % 4],
+  red: i % 4 === 1 || i % 4 === 2,
+}));
+
+
 export default function App() {
   const [scene, setScene] = useState('SPLASH');
   const [progress, setProgress] = useState(0);
@@ -234,41 +252,128 @@ export default function App() {
             initial={{ opacity: 1 }}
             exit={{ opacity: 0, scale: 1.1 }}
             transition={{ duration: 0.5 }}
-            className="position-absolute top-0 start-0 w-100 h-100 d-flex flex-column align-items-center justify-content-center"
+            className="position-absolute top-0 start-0 w-100 h-100 d-flex flex-column align-items-center justify-content-center overflow-hidden"
             style={{
               background: 'radial-gradient(circle, #1a4d2e 0%, #050a06 100%)',
               zIndex: 9999
             }}
           >
-            <motion.img
-              initial={{ y: 20, opacity: 0 }}
-              animate={{
-                y: 0,
-                opacity: 1,
-                filter: isOffline
-                  ? 'grayscale(0.6) drop-shadow(0px 10px 15px rgba(0,0,0,0.5))'
-                  : 'grayscale(0) drop-shadow(0px 10px 15px rgba(0,0,0,0.5))'
-              }}
-              transition={{ duration: 0.6 }}
-              src="assets/donkey.png"
-              alt="Donkey play Logo"
-              className="mb-4 shadow-lg"
-              style={{ width: '200px' }}
-              onError={(e) => { e.target.src = "https://via.placeholder.com/150?text=Donky+Play"; }}
-            />
+            {/* ===== 3D BACKGROUND: spotlight, perspective floor grid, floating suits ===== */}
+            <div className="sp3d-spot" />
+            <div className="sp3d-floor-wrap">
+              <div className="sp3d-floor" />
+            </div>
+            {SPLASH_PARTICLES.map((p, i) => (
+              <span
+                key={i}
+                className="sp3d-particle"
+                style={{
+                  left: `${p.left}%`,
+                  fontSize: p.size,
+                  animationDuration: `${p.dur}s`,
+                  animationDelay: `${p.delay}s`,
+                  color: p.red ? '#fca5a5' : '#bbf7d0'
+                }}
+              >
+                {p.s}
+              </span>
+            ))}
+            <div className="sp3d-vignette" />
+
+            {/* ===== 3D STAGE: logo with orbiting playing cards ===== */}
+            <div className="sp3d-stage mb-4">
+              <div className="sp3d-scene">
+                {/* glowing disc under the logo */}
+                <div className="sp3d-disc" />
+
+                {/* orbiting 3D cards (depth-sorted with the logo) */}
+                <div className="sp3d-orbit">
+                  {SPLASH_SUITS.map((c, i) => (
+                    <div
+                      key={i}
+                      className="sp3d-card"
+                      style={{ transform: `rotateY(${i * 90}deg) translateZ(150px)` }}
+                    >
+                      <span style={{ color: c.red ? '#dc2626' : '#111' }}>{c.s}</span>
+                      <b style={{ color: c.red ? '#dc2626' : '#111' }}>{c.s}</b>
+                    </div>
+                  ))}
+                </div>
+
+                {/* the logo — floats and swings in 3D */}
+                <motion.div
+                  className="sp3d-logo-wrap"
+                  initial={{ y: 20, opacity: 0, rotateY: -90, scale: 0.6 }}
+                  animate={{ y: 0, opacity: 1, rotateY: 0, scale: 1 }}
+                  transition={{ duration: 0.9, type: 'spring', stiffness: 90, damping: 14 }}
+                >
+                  <motion.img
+                    animate={{
+                      y: [0, -12, 0],
+                      rotateY: [-14, 14, -14],
+                      rotateX: [4, -4, 4],
+                      filter: isOffline
+                        ? 'grayscale(0.6) drop-shadow(0px 10px 15px rgba(0,0,0,0.5))'
+                        : 'grayscale(0) drop-shadow(0px 10px 15px rgba(0,0,0,0.5))'
+                    }}
+                    transition={{
+                      y: { duration: 3.2, repeat: Infinity, ease: 'easeInOut' },
+                      rotateY: { duration: 5, repeat: Infinity, ease: 'easeInOut' },
+                      rotateX: { duration: 4, repeat: Infinity, ease: 'easeInOut' },
+                      filter: { duration: 0.6 }
+                    }}
+                    src="assets/donkey.png"
+                    alt="Donkey play Logo"
+                    className="shadow-lg"
+                    style={{ width: '200px', transformStyle: 'preserve-3d' }}
+                    onError={(e) => { e.target.src = "https://via.placeholder.com/150?text=Donky+Play"; }}
+                  />
+                </motion.div>
+
+                {/* soft ground shadow that breathes with the float */}
+                <motion.div
+                  className="sp3d-shadow"
+                  animate={{ scaleX: [1, 0.78, 1], opacity: [0.55, 0.32, 0.55] }}
+                  transition={{ duration: 3.2, repeat: Infinity, ease: 'easeInOut' }}
+                />
+              </div>
+            </div>
 
 
-            <h2 className="fw-bold mb-4 tracking-widest text-uppercase" style={{ fontSize: '1.5rem', color: '#ffd700' }}>
-              Donkey play
+            {/* ===== 3D TITLE: letters flip in one by one, then gently wave ===== */}
+            <h2
+              className="fw-bold mb-4 tracking-widest text-uppercase sp3d-title"
+              style={{ fontSize: '1.5rem', color: '#ffd700' }}
+              aria-label="Donkey play"
+            >
+              {SPLASH_TITLE.map((ch, i) => (
+                <motion.span
+                  key={i}
+                  className="sp3d-letter"
+                  initial={{ opacity: 0, rotateX: -90, y: 20 }}
+                  animate={{ opacity: 1, rotateX: 0, y: 0 }}
+                  transition={{ delay: 0.35 + i * 0.07, type: 'spring', stiffness: 180, damping: 12 }}
+                >
+                  <span
+                    className="sp3d-letter-inner"
+                    style={{ animationDelay: `${i * 0.12}s` }}
+                  >
+                    {ch === ' ' ? '\u00A0' : ch}
+                  </span>
+                </motion.span>
+              ))}
             </h2>
 
 
-            <div className="w-75 px-4" style={{ maxWidth: '400px' }}>
-              <div className="progress bg-black border border-secondary" style={{ height: '10px', borderRadius: '10px' }}>
-                <motion.div
-                  className="progress-bar bg-success progress-bar-striped progress-bar-animated"
-                  style={{ width: `${progress}%` }}
-                />
+            {/* ===== 3D PROGRESS BAR (same progress logic) ===== */}
+            <div className="w-75 px-4 sp3d-bar-persp" style={{ maxWidth: '400px' }}>
+              <div className="sp3d-bar-tilt">
+                <div className="progress bg-black border border-secondary sp3d-bar" style={{ height: '10px', borderRadius: '10px' }}>
+                  <motion.div
+                    className="progress-bar bg-success progress-bar-striped progress-bar-animated"
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
               </div>
               <p className="text-center mt-3 small text-secondary fw-bold">
                 LOADING {Math.round(progress)}%
@@ -576,6 +681,129 @@ export default function App() {
         .app-container {
           width: 100vw;
           height: 100vh;
+        }
+
+        /* =====================================================
+           3D SPLASH SCREEN (visual only)
+           ===================================================== */
+
+        /* swaying spotlight from the top */
+        .sp3d-spot {
+          position: absolute; left: 50%; top: -10%; width: 130%; height: 70%; margin-left: -65%;
+          pointer-events: none; z-index: 0; transform-origin: 50% 0;
+          background: radial-gradient(ellipse at 50% 0%, rgba(255,244,190,.30) 0%, rgba(255,244,190,0) 65%);
+          animation: sp3dSway 6s ease-in-out infinite;
+        }
+        @keyframes sp3dSway { 0%,100% { transform: rotate(-4deg); } 50% { transform: rotate(4deg); } }
+
+        /* perspective floor grid that scrolls toward the viewer */
+        .sp3d-floor-wrap {
+          position: absolute; left: 0; right: 0; bottom: 0; height: 48%;
+          perspective: 420px; overflow: hidden; pointer-events: none; z-index: 0;
+          -webkit-mask-image: linear-gradient(to top, #000 15%, transparent 95%);
+                  mask-image: linear-gradient(to top, #000 15%, transparent 95%);
+        }
+        .sp3d-floor {
+          position: absolute; left: -50%; width: 200%; height: 200%; bottom: -60%;
+          transform-origin: 50% 100%; transform: rotateX(68deg);
+          background-image:
+            linear-gradient(rgba(250,204,21,.38) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(250,204,21,.38) 1px, transparent 1px);
+          background-size: 46px 46px;
+          animation: sp3dFloor 1.6s linear infinite;
+        }
+        @keyframes sp3dFloor { from { background-position: 0 0; } to { background-position: 0 46px; } }
+
+        /* floating suit symbols */
+        .sp3d-particle {
+          position: absolute; bottom: -50px; font-weight: 900; opacity: .16; pointer-events: none; z-index: 0;
+          animation: sp3dRise linear infinite;
+        }
+        @keyframes sp3dRise {
+          from { transform: translateY(0) rotateY(0deg) rotate(0deg); }
+          to   { transform: translateY(-115vh) rotateY(360deg) rotate(180deg); }
+        }
+        .sp3d-vignette {
+          position: absolute; inset: 0; pointer-events: none; z-index: 0;
+          background: radial-gradient(ellipse at center, transparent 45%, rgba(0,0,0,.7) 100%);
+        }
+
+        /* stage + 3D scene */
+        .sp3d-stage {
+          position: relative; z-index: 2; width: 320px; height: 260px;
+          perspective: 900px; perspective-origin: 50% 40%;
+        }
+        .sp3d-scene {
+          position: relative; width: 100%; height: 100%;
+          transform-style: preserve-3d;
+          transform: rotateX(-8deg);
+        }
+        .sp3d-logo-wrap {
+          position: absolute; left: 50%; top: 50%; width: 200px; margin-left: -100px; margin-top: -100px;
+          transform-style: preserve-3d; text-align: center;
+        }
+        .sp3d-logo-wrap img { display: block; margin: 0 auto; }
+
+        /* glowing disc below the logo */
+        .sp3d-disc {
+          position: absolute; left: 50%; top: 50%; width: 270px; height: 270px; margin: -135px 0 0 -135px;
+          border-radius: 50%; pointer-events: none;
+          background: radial-gradient(circle, rgba(250,204,21,.28) 0%, rgba(250,204,21,.08) 45%, transparent 70%);
+          transform: translateZ(-60px);
+          animation: sp3dDisc 2.4s ease-in-out infinite;
+        }
+        @keyframes sp3dDisc { 0%,100% { opacity: .6; } 50% { opacity: 1; } }
+
+        .sp3d-shadow {
+          position: absolute; left: 50%; bottom: 0; width: 150px; height: 22px; margin-left: -75px;
+          border-radius: 50%; pointer-events: none;
+          background: radial-gradient(ellipse, rgba(0,0,0,.75) 0%, transparent 70%);
+          transform: translateZ(-20px);
+        }
+
+        /* orbiting playing cards */
+        .sp3d-orbit {
+          position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+          transform-style: preserve-3d;
+          animation: sp3dOrbit 9s linear infinite;
+        }
+        @keyframes sp3dOrbit {
+          from { transform: rotateX(-14deg) rotateY(0deg); }
+          to   { transform: rotateX(-14deg) rotateY(360deg); }
+        }
+        .sp3d-card {
+          position: absolute; left: 50%; top: 50%; width: 46px; height: 64px; margin: -32px 0 0 -23px;
+          background: linear-gradient(145deg, #ffffff, #e5e7eb);
+          border-radius: 7px; border: 1px solid #9ca3af;
+          display: flex; align-items: center; justify-content: center;
+          backface-visibility: visible;
+          box-shadow: 0 6px 14px rgba(0,0,0,.55), 0 0 12px rgba(250,204,21,.35);
+        }
+        .sp3d-card span { font-size: 26px; font-weight: 900; line-height: 1; }
+        .sp3d-card b { position: absolute; top: 3px; left: 5px; font-size: 11px; line-height: 1; }
+
+        /* 3D title */
+        .sp3d-title {
+          position: relative; z-index: 2; perspective: 600px;
+          display: flex; justify-content: center; flex-wrap: nowrap;
+          text-shadow: 0 2px 0 #b45309, 0 4px 0 #78350f, 0 8px 14px rgba(0,0,0,.6), 0 0 18px rgba(255,215,0,.35);
+        }
+        .sp3d-letter { display: inline-block; transform-style: preserve-3d; }
+        .sp3d-letter-inner { display: inline-block; animation: sp3dWave 2.4s ease-in-out infinite; }
+        @keyframes sp3dWave {
+          0%,100% { transform: translateY(0) rotateY(0deg); }
+          50%     { transform: translateY(-5px) rotateY(18deg); }
+        }
+
+        /* 3D progress bar */
+        .sp3d-bar-persp { position: relative; z-index: 2; perspective: 500px; }
+        .sp3d-bar-tilt { transform: rotateX(18deg); transform-origin: 50% 100%; }
+        .sp3d-bar {
+          box-shadow: 0 5px 0 #000, 0 10px 14px rgba(0,0,0,.6), inset 0 2px 3px rgba(0,0,0,.8);
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .sp3d-spot, .sp3d-floor, .sp3d-particle, .sp3d-orbit, .sp3d-disc, .sp3d-letter-inner { animation: none !important; }
         }
       `}</style>
     </div>

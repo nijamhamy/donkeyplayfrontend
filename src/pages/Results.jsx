@@ -1,5 +1,5 @@
-import React from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import React, { useMemo } from 'react';
+import { motion } from 'framer-motion';
 import { Trophy, RotateCcw, Medal, Sparkles } from 'lucide-react';
 
 const MedalIcon = ({ rank, size = 28 }) => {
@@ -13,23 +13,19 @@ const MedalIcon = ({ rank, size = 28 }) => {
     return <Medal size={size} style={{ color: colors[rank] || '#ffffff' }} />;
 };
 
-// Small floating particle used for the celebratory background
-const Particle = ({ delay, left, emoji }) => (
-    <motion.div
-        initial={{ y: '110vh', opacity: 0, rotate: 0 }}
-        animate={{ y: '-10vh', opacity: [0, 1, 1, 0], rotate: 360 }}
-        transition={{ duration: 5 + Math.random() * 3, delay, repeat: Infinity, ease: 'linear' }}
-        style={{
-            position: 'absolute',
-            left: `${left}%`,
-            fontSize: `${14 + Math.random() * 14}px`,
-            pointerEvents: 'none',
-            zIndex: 1
-        }}
-    >
-        {emoji}
-    </motion.div>
-);
+// ---------- Visual-only constants (no logic) ----------
+const AMBIENT = [
+    ['♠', 6, 22, 30], ['♥', 22, 28, 44], ['♦', 40, 20, 26],
+    ['♣', 58, 30, 38], ['♥', 76, 26, 28], ['♠', 92, 24, 42],
+];
+const CONFETTI_SYMBOLS = ['🎉', '✨', '🏆', '⭐', '🎊', '♠', '♥', '♦', '♣'];
+
+// Podium look per rank (2nd | 1st | 3rd layout)
+const PODIUM = {
+    1: { h: 118, face: 'linear-gradient(#fde68a, #fbbf24 55%, #d99a0b)', side: '#92590a', text: '#4a2c05', glow: 'rgba(250,204,21,.55)' },
+    2: { h: 88, face: 'linear-gradient(#f3f4f6, #cbd5e1 55%, #94a3b8)', side: '#4b5563', text: '#1f2937', glow: 'rgba(203,213,225,.4)' },
+    3: { h: 66, face: 'linear-gradient(#f5c28f, #cd7f32 55%, #8a4b14)', side: '#5a300a', text: '#2a1404', glow: 'rgba(205,127,50,.4)' },
+};
 
 export default function Results({ winners = [], players = [], onRestart }) {
     const safeWinners = Array.isArray(winners)
@@ -85,207 +81,233 @@ export default function Results({ winners = [], players = [], onRestart }) {
 
     const podiumWinners = safeWinners.filter((w) => w.rank !== 4);
 
-    const particles = ['🎉', '✨', '🏆', '⭐', '🎊'];
+    // ---------- Visual-only helpers ----------
+    // Random values are generated once so the confetti doesn't jump on re-render
+    const confetti = useMemo(() => Array.from({ length: 16 }, (_, i) => ({
+        s: CONFETTI_SYMBOLS[i % CONFETTI_SYMBOLS.length],
+        left: (i * 6.4 + 3) % 100,
+        size: 14 + ((i * 7) % 14),
+        dur: 5 + ((i * 13) % 30) / 10,
+        delay: -((i * 0.45) % 6),
+    })), []);
+
+    // Build 2nd | 1st | 3rd podium order from the same winners data
+    const byRank = (r) => {
+        const idx = podiumWinners.findIndex((w) => w.rank === r);
+        return idx === -1 ? null : { w: podiumWinners[idx], idx };
+    };
+    const podiumSlots = [byRank(2), byRank(1), byRank(3)].filter(Boolean);
+    const enterOrder = { 3: 0, 2: 1, 1: 2 }; // 3rd rises first, 1st last
 
     return (
         <div
-            className="vh-100 d-flex flex-column align-items-center justify-content-center p-4 position-relative overflow-hidden"
-            style={{
-                background: 'radial-gradient(ellipse at top, #1a1508 0%, #050505 65%)'
-            }}
+            className="res-root vh-100 d-flex flex-column align-items-center justify-content-center p-4 position-relative overflow-hidden"
         >
-            {/* Floating celebratory particles */}
-            {Array.from({ length: 14 }).map((_, i) => (
-                <Particle
-                    key={i}
-                    delay={i * 0.4}
-                    left={(i * 7) % 100}
-                    emoji={particles[i % particles.length]}
-                />
+            {/* ===== ENVIRONMENT: casino room, spotlight, floating suits ===== */}
+            <div className="env-room" />
+            <div className="env-spot" />
+            {AMBIENT.map(([s, left, size, dur], i) => (
+                <span key={i} className="env-suit"
+                    style={{ left: `${left}%`, fontSize: size, animationDuration: `${dur}s`, animationDelay: `${-i * 5}s`, color: (s === '♥' || s === '♦') ? '#fca5a5' : '#bbf7d0' }}>
+                    {s}
+                </span>
             ))}
 
-            {/* Soft glow behind the card */}
-            <motion.div
-                animate={{ opacity: [0.4, 0.7, 0.4], scale: [1, 1.08, 1] }}
-                transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
-                style={{
-                    position: 'absolute',
-                    width: '420px',
-                    height: '420px',
-                    borderRadius: '50%',
-                    background: 'radial-gradient(circle, rgba(255,215,0,0.18) 0%, rgba(255,215,0,0) 70%)',
-                    zIndex: 0
-                }}
-            />
+            {/* Falling celebratory confetti */}
+            {confetti.map((c, i) => (
+                <span key={i} className="res-confetti"
+                    style={{ left: `${c.left}%`, fontSize: c.size, animationDuration: `${c.dur}s`, animationDelay: `${c.delay}s` }}>
+                    {c.s}
+                </span>
+            ))}
+            <div className="env-vignette" />
 
+            {/* ===== RESULTS PANEL ===== */}
             <motion.div
-                initial={{ opacity: 0, y: 40, scale: 0.92 }}
-                animate={{ opacity: 1, y: 0, scale: 1 }}
-                transition={{ duration: 0.55, ease: 'easeOut' }}
-                className="p-4 rounded-4 text-center w-100 position-relative"
-                style={{
-                    maxWidth: '450px',
-                    zIndex: 2,
-                    background: 'linear-gradient(180deg, rgba(28,22,10,0.96) 0%, rgba(10,8,4,0.98) 100%)',
-                    border: '1px solid rgba(255,215,0,0.35)',
-                    boxShadow: '0 20px 60px rgba(0,0,0,0.6), 0 0 40px rgba(255,215,0,0.08) inset',
-                    backdropFilter: 'blur(10px)'
-                }}
+                initial={{ opacity: 0, y: 50, rotateX: 35, scale: 0.9 }}
+                animate={{ opacity: 1, y: 0, rotateX: 0, scale: 1 }}
+                transition={{ type: 'spring', stiffness: 130, damping: 15 }}
+                className="res-panel p-4 rounded-4 text-center w-100 position-relative"
+                style={{ maxWidth: '450px', zIndex: 5 }}
             >
+                {/* 3D spinning trophy */}
                 <motion.div
                     initial={{ scale: 0, rotate: -30 }}
                     animate={{ scale: 1, rotate: 0 }}
                     transition={{ delay: 0.15, type: 'spring', stiffness: 260, damping: 14 }}
                     className="d-inline-block position-relative mb-2"
                 >
-                    <motion.div
-                        animate={{ opacity: [0.3, 0.9, 0.3] }}
-                        transition={{ duration: 2, repeat: Infinity }}
-                        style={{
-                            position: 'absolute',
-                            inset: '-14px',
-                            borderRadius: '50%',
-                            background: 'radial-gradient(circle, rgba(255,215,0,0.5) 0%, rgba(255,215,0,0) 70%)'
-                        }}
-                    />
-                    <Trophy size={60} className="text-warning position-relative" />
+                    <div className="trophy-glow" />
+                    <div className="trophy-stage">
+                        <div className="trophy-spin">
+                            <Trophy size={64} className="text-warning" style={{ filter: 'drop-shadow(0 4px 0 #92590a)' }} />
+                        </div>
+                    </div>
+                    <div className="trophy-shadow" />
                 </motion.div>
 
                 <motion.h2
                     initial={{ opacity: 0, letterSpacing: '0.4em' }}
                     animate={{ opacity: 1, letterSpacing: '0.08em' }}
                     transition={{ delay: 0.3, duration: 0.6 }}
-                    className="fw-bold mb-4"
-                    style={{
-                        background: 'linear-gradient(90deg, #ffd700, #fff3c4, #ffd700)',
-                        WebkitBackgroundClip: 'text',
-                        WebkitTextFillColor: 'transparent',
-                        fontSize: '1.5rem'
-                    }}
+                    className="res-title fw-bold mb-3"
                 >
                     MATCH RESULTS
                 </motion.h2>
 
-                <div className="d-flex flex-column gap-2 mb-4 text-start">
-                    <AnimatePresence>
-                        {podiumWinners.map((w, index) => (
-                            <motion.div
-                                key={w.id || index}
-                                initial={{ opacity: 0, x: -40 }}
-                                animate={{ opacity: 1, x: 0 }}
-                                transition={{ delay: 0.45 + index * 0.15, type: 'spring', stiffness: 220, damping: 18 }}
-                                whileHover={{ scale: 1.02 }}
-                                className="d-flex align-items-center justify-content-between p-3 rounded-pill position-relative overflow-hidden"
-                                style={{
-                                    background: w.rank === 1
-                                        ? 'linear-gradient(90deg, rgba(255,215,0,0.18), rgba(0,0,0,0.3))'
-                                        : 'rgba(255,255,255,0.05)',
-                                    border: w.rank === 1
-                                        ? '1px solid rgba(255,215,0,0.5)'
-                                        : '1px solid rgba(255,255,255,0.12)',
-                                    boxShadow: w.rank === 1 ? '0 0 20px rgba(255,215,0,0.15)' : 'none'
-                                }}
-                            >
-                                {w.rank === 1 && (
+                {/* ===== 3D PODIUM ===== */}
+                {podiumSlots.length > 0 && (
+                    <div className="podium d-flex align-items-end justify-content-center gap-2 mb-3">
+                        {podiumSlots.map(({ w, idx }) => {
+                            const st = PODIUM[w.rank] || PODIUM[3];
+                            return (
+                                <div key={w.id || idx} className="podium-col">
                                     <motion.div
-                                        animate={{ x: ['-100%', '200%'] }}
-                                        transition={{ duration: 2.2, repeat: Infinity, ease: 'easeInOut', repeatDelay: 1 }}
-                                        style={{
-                                            position: 'absolute',
-                                            top: 0, bottom: 0, width: '40%',
-                                            background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent)',
-                                            zIndex: 0
-                                        }}
-                                    />
-                                )}
-
-                                <div className="d-flex align-items-center gap-2 overflow-hidden position-relative" style={{ zIndex: 1 }}>
-                                    <motion.div
-                                        animate={w.rank === 1 ? { rotate: [0, -8, 8, 0] } : {}}
-                                        transition={{ duration: 1.4, repeat: Infinity, repeatDelay: 1.5 }}
+                                        initial={{ opacity: 0, y: -60 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        transition={{ delay: 0.7 + (enterOrder[w.rank] ?? 0) * 0.25, type: 'spring', stiffness: 220, damping: 12 }}
+                                        className="podium-head"
                                     >
-                                        <MedalIcon rank={w.rank} />
+                                        <div className={w.rank === 1 ? 'medal-bob' : ''}>
+                                            <MedalIcon rank={w.rank} size={w.rank === 1 ? 34 : 28} />
+                                        </div>
+                                        <span className="podium-name text-white fw-bold">{getPlayerName(w, idx)}</span>
+                                        <span className="podium-rank" style={{ color: w.rank === 1 ? '#ffd700' : 'rgba(255,255,255,0.6)' }}>
+                                            {getRankText(w.rank)}
+                                        </span>
                                     </motion.div>
-                                    <span className="fw-bold text-truncate text-white">
-                                        {getPlayerName(w, index)}
-                                    </span>
+
+                                    <motion.div
+                                        initial={{ scaleY: 0 }}
+                                        animate={{ scaleY: 1 }}
+                                        transition={{ delay: 0.45 + (enterOrder[w.rank] ?? 0) * 0.25, type: 'spring', stiffness: 160, damping: 16 }}
+                                        className={`podium-block ${w.rank === 1 ? 'gold' : ''}`}
+                                        style={{
+                                            height: st.h,
+                                            transformOrigin: 'bottom',
+                                            background: st.face,
+                                            color: st.text,
+                                            boxShadow: `0 6px 0 ${st.side}, 0 12px 16px rgba(0,0,0,.5), 0 0 24px ${st.glow}, inset 0 2px 0 rgba(255,255,255,.6)`
+                                        }}
+                                    >
+                                        <span className="podium-num">{w.rank}</span>
+                                    </motion.div>
                                 </div>
+                            );
+                        })}
+                    </div>
+                )}
 
-                                <span
-                                    className="small fw-bold ms-2 position-relative"
-                                    style={{
-                                        zIndex: 1,
-                                        color: w.rank === 1 ? '#ffd700' : 'rgba(255,255,255,0.55)',
-                                        letterSpacing: '0.08em'
-                                    }}
-                                >
-                                    {getRankText(w.rank)}
-                                </span>
-                            </motion.div>
-                        ))}
-                    </AnimatePresence>
+                {/* ===== DONKEY ===== */}
+                {donkeyWinner && (
+                    <motion.div
+                        initial={{ opacity: 0, scale: 0.6, rotate: -6 }}
+                        animate={{ opacity: 1, scale: 1, rotate: 0 }}
+                        transition={{ delay: 0.45 + podiumWinners.length * 0.15 + 0.6, type: 'spring', stiffness: 200, damping: 12 }}
+                        className="donkey-card mt-3 mb-3 p-3 rounded-4 text-center position-relative overflow-hidden"
+                    >
+                        <div className="donkey-emoji display-4 position-relative">🫏</div>
 
-                    {donkeyWinner && (
-                        <motion.div
-                            initial={{ opacity: 0, scale: 0.6, rotate: -6 }}
-                            animate={{ opacity: 1, scale: 1, rotate: 0 }}
-                            transition={{ delay: 0.45 + podiumWinners.length * 0.15 + 0.25, type: 'spring', stiffness: 200, damping: 12 }}
-                            className="mt-3 p-3 rounded-4 text-center position-relative overflow-hidden"
-                            style={{
-                                background: 'linear-gradient(160deg, rgba(220,53,69,0.25), rgba(80,10,15,0.35))',
-                                border: '1px solid rgba(220,53,69,0.6)',
-                                boxShadow: '0 0 30px rgba(220,53,69,0.25)'
-                            }}
-                        >
-                            <motion.div
-                                animate={{ opacity: [0.15, 0.4, 0.15] }}
-                                transition={{ duration: 1.6, repeat: Infinity }}
-                                style={{
-                                    position: 'absolute',
-                                    inset: 0,
-                                    background: 'radial-gradient(circle, rgba(220,53,69,0.4) 0%, rgba(220,53,69,0) 70%)'
-                                }}
-                            />
-
-                            <motion.div
-                                animate={{ rotate: [0, -10, 10, -10, 10, 0] }}
-                                transition={{ delay: 1, duration: 0.7, repeat: Infinity, repeatDelay: 2.3 }}
-                                className="display-4 position-relative"
-                                style={{ zIndex: 1 }}
-                            >
-                                🫏
-                            </motion.div>
-
-                            <motion.div
-                                initial={{ opacity: 0 }}
-                                animate={{ opacity: 1 }}
-                                transition={{ delay: 1 }}
-                                className="d-flex align-items-center justify-content-center gap-2 position-relative"
-                                style={{ zIndex: 1 }}
-                            >
-                                <Sparkles size={16} className="text-danger" />
-                                <span className="h4 fw-bold text-danger mb-0" style={{ letterSpacing: '0.05em' }}>
-                                    DONKEY: {getPlayerName(donkeyWinner, safeWinners.length)}
-                                </span>
-                                <Sparkles size={16} className="text-danger" />
-                            </motion.div>
-                        </motion.div>
-                    )}
-                </div>
+                        <div className="d-flex align-items-center justify-content-center gap-2 position-relative">
+                            <Sparkles size={16} className="text-danger" />
+                            <span className="h5 fw-bold text-danger mb-0" style={{ letterSpacing: '0.05em' }}>
+                                DONKEY: {getPlayerName(donkeyWinner, safeWinners.length)}
+                            </span>
+                            <Sparkles size={16} className="text-danger" />
+                        </div>
+                    </motion.div>
+                )}
 
                 <motion.button
                     initial={{ opacity: 0, y: 15 }}
                     animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.9 }}
-                    whileHover={{ scale: 1.03, boxShadow: '0 6px 24px rgba(255,215,0,0.4)' }}
+                    transition={{ delay: 1.2 }}
                     whileTap={{ scale: 0.97 }}
-                    className="btn btn-warning btn-lg w-100 fw-bold rounded-pill mt-2 border-0"
-                    style={{ boxShadow: '0 4px 16px rgba(255,215,0,0.25)' }}
+                    className="btn3d-gold w-100 fw-bold mt-2"
                     onClick={onRestart}
                 >
                     <RotateCcw size={20} className="me-2" /> REPLAY GAME
                 </motion.button>
             </motion.div>
+
+            <style>{`
+                .res-root { background:#02100a; perspective: 900px; user-select:none; -webkit-tap-highlight-color: transparent; }
+
+                /* ---- environment (same casino room as the game) ---- */
+                .env-room { position:absolute; inset:0; z-index:0; pointer-events:none;
+                    background: radial-gradient(ellipse at 50% 42%, #14703f 0%, #0b4527 38%, #062615 70%, #02100a 100%); }
+                .env-room::after { content:''; position:absolute; inset:0;
+                    background: repeating-linear-gradient(45deg, rgba(255,255,255,.03) 0 2px, transparent 2px 7px); }
+                .env-spot { position:absolute; left:50%; top:-10%; width:130%; height:75%; margin-left:-65%; z-index:1; pointer-events:none;
+                    background: radial-gradient(ellipse at 50% 0%, rgba(255,244,190,.32) 0%, rgba(255,244,190,0) 65%); }
+                .env-suit { position:absolute; bottom:-60px; z-index:1; font-weight:900; opacity:.12; pointer-events:none;
+                    animation: envRise linear infinite; will-change: transform; }
+                @keyframes envRise { from { transform: translateY(0); } to { transform: translateY(-115vh); } }
+                .env-vignette { position:absolute; inset:0; z-index:2; pointer-events:none;
+                    background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,.65) 100%); }
+
+                .res-confetti { position:absolute; top:-8%; z-index:3; pointer-events:none; opacity:.9;
+                    animation: confFall linear infinite; will-change: transform; }
+                @keyframes confFall { from { transform: translateY(0) rotate(0deg); } to { transform: translateY(115vh) rotate(360deg); } }
+
+                /* ---- panel ---- */
+                .res-panel { background: linear-gradient(160deg, rgba(27,42,32,.97), rgba(7,13,9,.98));
+                    border: 2px solid #facc15;
+                    box-shadow: 0 0 0 6px rgba(0,0,0,.35), 0 28px 50px rgba(0,0,0,.7), 0 0 60px rgba(250,204,21,.35), inset 0 2px 0 rgba(255,255,255,.1); }
+                .res-title { font-size:1.5rem; color:#fde047;
+                    text-shadow: 0 2px 0 #b45309, 0 4px 0 #78350f, 0 0 20px rgba(253,224,71,.6); }
+
+                /* ---- trophy ---- */
+                .trophy-stage { perspective: 400px; position:relative; z-index:1; }
+                .trophy-spin { display:inline-block; animation: trophySpin 4s linear infinite; will-change: transform; }
+                @keyframes trophySpin { to { transform: rotateY(360deg); } }
+                .trophy-glow { position:absolute; inset:-18px; border-radius:50%; pointer-events:none;
+                    background: radial-gradient(circle, rgba(255,215,0,.5) 0%, rgba(255,215,0,0) 70%);
+                    animation: trophyGlow 2s ease-in-out infinite; }
+                @keyframes trophyGlow { 0%,100% { opacity:.4; transform:scale(1); } 50% { opacity:1; transform:scale(1.12); } }
+                .trophy-shadow { width:56px; height:10px; margin:2px auto 0; border-radius:50%;
+                    background: radial-gradient(ellipse, rgba(0,0,0,.6), rgba(0,0,0,0) 70%); }
+
+                /* ---- podium ---- */
+                .podium { min-height: 190px; }
+                .podium-col { flex:1; max-width:118px; display:flex; flex-direction:column; align-items:center; }
+                .podium-head { display:flex; flex-direction:column; align-items:center; gap:2px; margin-bottom:6px; width:100%; }
+                .podium-name { font-size:.78rem; max-width:100%; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+                .podium-rank { font-size:.62rem; font-weight:800; letter-spacing:.08em; }
+                .podium-block { position:relative; width:100%; border-radius:10px 10px 4px 4px; display:flex; align-items:center; justify-content:center; overflow:hidden; }
+                .podium-num { font-size:2.2rem; font-weight:900; line-height:1; text-shadow: 0 2px 0 rgba(255,255,255,.35); opacity:.9; }
+                .podium-block::after { content:''; position:absolute; inset:0; pointer-events:none;
+                    background: linear-gradient(115deg, rgba(255,255,255,.35) 0%, rgba(255,255,255,0) 40%); }
+                .podium-block.gold::before { content:''; position:absolute; top:0; bottom:0; left:0; width:40%; z-index:1; pointer-events:none;
+                    background: linear-gradient(100deg, transparent, rgba(255,255,255,.6), transparent);
+                    transform: translateX(-200%) skewX(-20deg); animation: podSheen 3s ease-in-out infinite; }
+                @keyframes podSheen { 0%,55% { transform: translateX(-200%) skewX(-20deg); } 100% { transform: translateX(450%) skewX(-20deg); } }
+                .medal-bob { animation: medalBob 1.2s ease-in-out infinite; }
+                @keyframes medalBob { 0%,100% { transform: translateY(0) rotate(-6deg); } 50% { transform: translateY(-5px) rotate(6deg); } }
+
+                /* ---- donkey ---- */
+                .donkey-card { background: linear-gradient(160deg, rgba(220,53,69,.28), rgba(80,10,15,.4));
+                    border: 2px solid rgba(220,53,69,.7);
+                    box-shadow: 0 5px 0 rgba(90,10,18,.8), 0 0 30px rgba(220,53,69,.28), inset 0 2px 0 rgba(255,255,255,.12); }
+                .donkey-emoji { display:inline-block; transform-origin: 50% 90%; animation: donkeyWobble 3s ease-in-out infinite; }
+                @keyframes donkeyWobble { 0%,70%,100% { transform: rotate(0); } 75% { transform: rotate(-10deg); } 80% { transform: rotate(10deg); } 85% { transform: rotate(-10deg); } 90% { transform: rotate(10deg); } }
+
+                /* ---- 3D gold button ---- */
+                .btn3d-gold { position:relative; overflow:hidden; border:0; border-radius:999px; padding:14px; color:#4a2c05; cursor:pointer;
+                    font-size:1.05rem; letter-spacing:1px;
+                    background: linear-gradient(#fde68a, #fbbf24 55%, #f59e0b);
+                    box-shadow: 0 7px 0 #92590a, 0 14px 18px rgba(0,0,0,.5), inset 0 2px 0 rgba(255,255,255,.6);
+                    transition: transform .08s, box-shadow .08s; }
+                .btn3d-gold::after { content:''; position:absolute; top:0; bottom:0; left:0; width:35%;
+                    background: linear-gradient(100deg, transparent, rgba(255,255,255,.55), transparent);
+                    transform: translateX(-200%) skewX(-20deg); animation: podSheen 3.6s ease-in-out infinite; }
+                .btn3d-gold:active { transform: translateY(6px); box-shadow: 0 1px 0 #92590a, 0 4px 8px rgba(0,0,0,.5), inset 0 2px 0 rgba(255,255,255,.6); }
+
+                @media (prefers-reduced-motion: reduce) {
+                    .env-suit, .res-confetti, .trophy-spin, .trophy-glow, .medal-bob, .donkey-emoji,
+                    .podium-block.gold::before, .btn3d-gold::after { animation: none !important; }
+                }
+            `}</style>
         </div>
     );
 }

@@ -2,12 +2,12 @@ import { useEffect, useRef } from 'react';
 import { Capacitor } from '@capacitor/core';
 import { App as CapApp } from '@capacitor/app';
 import {
-  AdMob,
-  AdmobConsentStatus,
-  AppOpenAdPluginEvents,
-  BannerAdPluginEvents,
-  InterstitialAdPluginEvents,
-  RewardAdPluginEvents,
+    AdMob,
+    AdmobConsentStatus,
+    AppOpenAdPluginEvents,
+    BannerAdPluginEvents,
+    InterstitialAdPluginEvents,
+    RewardAdPluginEvents,
 } from '@capacitor-community/admob';
 
 /* =====================================================================
@@ -28,6 +28,8 @@ import {
    - Never shown on top of another ad (interstitial / rewarded / banner tap)
      or on top of the consent form.
    - An ad older than 4 hours is not used (Google rule), it is reloaded.
+   - If no consent message is configured for this app in AdMob console,
+     we DON'T block ads — we just skip the consent gate and proceed.
    ===================================================================== */
 
 /* ========================= SETTINGS ========================= */
@@ -53,6 +55,7 @@ const AD_EXPIRY_MS = 4 * 60 * 60 * 1000; // Google: app open ads expire after 4 
 const SAFE_SCENES = ['HOME', 'RESULTS']; // never show during PLAYING / MULTIPLAYER
 const MAX_LOAD_RETRIES = 3;
 const RETRY_DELAY_MS = 30 * 1000; // 30s, 60s, 90s
+const SHOWING_STUCK_TIMEOUT_MS = 5 * 60 * 1000; // safety net if Closed/FailedToShow never fires
 
 // true = print "[AppOpenAd] ..." messages in Logcat (search "AppOpenAd").
 // Set to false before you publish.
@@ -64,365 +67,414 @@ const LAST_SHOWN_KEY = 'donkey_play_app_open_last_shown';
 /* ========================= HELPERS ========================= */
 
 const log = (...args) => {
-  if (DEBUG) console.log('[AppOpenAd]', ...args);
+    if (DEBUG) console.log('[AppOpenAd]', ...args);
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function readNumber(key) {
-  try {
-    return parseInt(localStorage.getItem(key) || '0', 10) || 0;
-  } catch (e) {
-    return 0;
-  }
+    try {
+        return parseInt(localStorage.getItem(key) || '0', 10) || 0;
+    } catch (e) {
+        return 0;
+    }
 }
 
 function writeNumber(key, value) {
-  try {
-    localStorage.setItem(key, String(value));
-  } catch (e) {
-    // ignore
-  }
+    try {
+        localStorage.setItem(key, String(value));
+    } catch (e) {
+        // ignore
+    }
 }
 
 // Shared state (module level, so it survives re-renders and React StrictMode)
 const ad = {
-  setupPromise: null,
-  consentInfo: null,
-  consentFormOpen: false,
-  loadPromise: null,
-  loaded: false,
-  loadedAt: 0,
-  retries: 0,
-  retryTimer: null,
-  showing: false,
-  showingSince: 0,
-  otherAdOpenSince: 0,
-  lastAdActivityAt: 0,
-  lastShownAt: readNumber(LAST_SHOWN_KEY),
-  backgroundedAt: 0,
-  launchCount: 0,
-  launchCounted: false,
-  coldStartHandled: false,
+    setupPromise: null,
+    consentInfo: null,
+    consentUnavailable: false, // true when this app has no consent message configured in AdMob
+    consentFormOpen: false,
+    loadPromise: null,
+    loaded: false,
+    loadedAt: 0,
+    retries: 0,
+    retryTimer: null,
+    showing: false,
+    showingSince: 0,
+    showingStuckTimer: null,
+    otherAdOpenSince: 0,
+    lastAdActivityAt: 0,
+    lastShownAt: readNumber(LAST_SHOWN_KEY),
+    backgroundedAt: 0,
+    launchCount: 0,
+    launchCounted: false,
+    coldStartHandled: false,
 };
 
 function countLaunch() {
-  if (ad.launchCounted) return;
-  ad.launchCounted = true;
-  try {
-    const next = readNumber(LAUNCH_COUNT_KEY) + 1;
-    localStorage.setItem(LAUNCH_COUNT_KEY, String(next));
-    ad.launchCount = next;
-  } catch (e) {
-    // storage not available -> do not block ads forever
-    ad.launchCount = MIN_LAUNCHES_BEFORE_FIRST_AD;
-  }
+    if (ad.launchCounted) return;
+    ad.launchCounted = true;
+    try {
+        const next = readNumber(LAUNCH_COUNT_KEY) + 1;
+        localStorage.setItem(LAUNCH_COUNT_KEY, String(next));
+        ad.launchCount = next;
+    } catch (e) {
+        // storage not available -> do not block ads forever
+        ad.launchCount = MIN_LAUNCHES_BEFORE_FIRST_AD;
+    }
 }
 
 function isAdFresh() {
-  return ad.loaded && Date.now() - ad.loadedAt < AD_EXPIRY_MS;
+    return ad.loaded && Date.now() - ad.loadedAt < AD_EXPIRY_MS;
+}
+
+function clearShowingStuckTimer() {
+    if (ad.showingStuckTimer) {
+        clearTimeout(ad.showingStuckTimer);
+        ad.showingStuckTimer = null;
+    }
+}
+
+function setShowing(value) {
+    ad.showing = value;
+    clearShowingStuckTimer();
+    if (value) {
+        // Belt-and-suspenders: if the native Closed/FailedToShow event is ever
+        // dropped, don't let ad.showing block every future ad forever.
+        ad.showingStuckTimer = setTimeout(() => {
+            log('showing flag stuck for 60s, force-clearing it');
+            ad.showing = false;
+            ad.showingStuckTimer = null;
+        }, SHOWING_STUCK_TIMEOUT_MS);
+    }
 }
 
 /* ================= ADMOB SETUP + CONSENT ================= */
 
 function setupAdMob() {
-  if (!ad.setupPromise) {
-    ad.setupPromise = (async () => {
-      await AdMob.initialize({
-        initializeForTesting: MY_TEST_DEVICE_IDS.length > 0,
-        testingDevices: MY_TEST_DEVICE_IDS,
-      });
-      ad.consentInfo = await AdMob.requestConsentInfo();
-      log('AdMob ready. consent:', JSON.stringify(ad.consentInfo));
-    })().catch((e) => {
-      console.warn('[AppOpenAd] AdMob setup failed:', e?.message || e);
-      ad.setupPromise = null; // allow a new try later
-    });
-  }
-  return ad.setupPromise;
+    if (!ad.setupPromise) {
+        ad.setupPromise = (async () => {
+            await AdMob.initialize({
+                initializeForTesting: MY_TEST_DEVICE_IDS.length > 0,
+                testingDevices: MY_TEST_DEVICE_IDS,
+            });
+
+            try {
+                ad.consentInfo = await AdMob.requestConsentInfo();
+                ad.consentUnavailable = false;
+                log('AdMob ready. consent:', JSON.stringify(ad.consentInfo));
+            } catch (e) {
+                // No consent message configured for this app in AdMob console
+                // (or consent service otherwise unavailable). Don't block ads
+                // forever because of this — just skip the consent gate.
+                console.warn('[AppOpenAd] consent info unavailable, proceeding without consent gate:', e?.message || e);
+                ad.consentInfo = null;
+                ad.consentUnavailable = true;
+            }
+        })().catch((e) => {
+            console.warn('[AppOpenAd] AdMob setup failed:', e?.message || e);
+            ad.setupPromise = null; // allow a new try later
+        });
+    }
+    return ad.setupPromise;
 }
 
 // Works with new and old plugin versions
 function consentAllowsAds(info) {
-  if (!info) return false;
-  if (typeof info.canRequestAds === 'boolean') return info.canRequestAds;
-  return info.status !== AdmobConsentStatus.REQUIRED;
+    if (!info) return false;
+    if (typeof info.canRequestAds === 'boolean') return info.canRequestAds;
+    return info.status !== AdmobConsentStatus.REQUIRED;
 }
 
 // Returns true when we are allowed to request ads (consent OK).
 // The consent form (GDPR / UMP) is only shown when allowForm = true.
 async function canRequestAds(allowForm) {
-  await setupAdMob();
-  if (!ad.consentInfo) return false;
+    await setupAdMob();
 
-  const info = ad.consentInfo;
-  if (
-    !consentAllowsAds(info) &&
-    allowForm &&
-    info.isConsentFormAvailable &&
-    info.status === AdmobConsentStatus.REQUIRED
-  ) {
-    ad.consentFormOpen = true;
-    try {
-      ad.consentInfo = await AdMob.showConsentForm();
-    } catch (e) {
-      log('consent form error', e);
-    } finally {
-      ad.consentFormOpen = false;
-      ad.lastAdActivityAt = Date.now();
+    // No consent message configured for this app -> don't gate on it.
+    if (ad.consentUnavailable) return true;
+
+    if (!ad.consentInfo) return false;
+
+    const info = ad.consentInfo;
+    if (
+        !consentAllowsAds(info) &&
+        allowForm &&
+        info.isConsentFormAvailable &&
+        info.status === AdmobConsentStatus.REQUIRED
+    ) {
+        ad.consentFormOpen = true;
+        try {
+            ad.consentInfo = await AdMob.showConsentForm();
+        } catch (e) {
+            log('consent form error', e);
+        } finally {
+            ad.consentFormOpen = false;
+            ad.lastAdActivityAt = Date.now();
+        }
     }
-  }
 
-  return consentAllowsAds(ad.consentInfo);
+    return consentAllowsAds(ad.consentInfo);
 }
 
 /* ====================== LOAD / SHOW ====================== */
 
 function scheduleRetry() {
-  if (ad.retries >= MAX_LOAD_RETRIES) return;
-  ad.retries += 1;
-  clearTimeout(ad.retryTimer);
-  ad.retryTimer = setTimeout(() => {
-    loadAd();
-  }, RETRY_DELAY_MS * ad.retries);
+    if (ad.retries >= MAX_LOAD_RETRIES) return;
+    ad.retries += 1;
+    clearTimeout(ad.retryTimer);
+    ad.retryTimer = setTimeout(() => {
+        loadAd({ allowConsentForm: true });
+    }, RETRY_DELAY_MS * ad.retries);
 }
 
 async function doLoad(allowConsentForm) {
-  try {
-    if (!(await canRequestAds(allowConsentForm))) {
-      log('cannot request ads yet (consent / setup)');
-      return false;
+    try {
+        if (!(await canRequestAds(allowConsentForm))) {
+            log('cannot request ads yet (consent / setup)');
+            return false;
+        }
+        log('loading app open ad...');
+        await AdMob.loadAppOpen({ adId: AD_UNIT_ID });
+        ad.loaded = true;
+        ad.loadedAt = Date.now();
+        ad.retries = 0;
+        log('ad loaded');
+        return true;
+    } catch (e) {
+        ad.loaded = false;
+        console.warn('[AppOpenAd] load failed:', e?.message || JSON.stringify(e));
+        scheduleRetry();
+        return false;
     }
-    log('loading app open ad...');
-    await AdMob.loadAppOpen({ adId: AD_UNIT_ID });
-    ad.loaded = true;
-    ad.loadedAt = Date.now();
-    ad.retries = 0;
-    log('ad loaded');
-    return true;
-  } catch (e) {
-    ad.loaded = false;
-    console.warn('[AppOpenAd] load failed:', e?.message || JSON.stringify(e));
-    scheduleRetry();
-    return false;
-  }
 }
 
 function loadAd({ allowConsentForm = false } = {}) {
-  if (isAdFresh()) return Promise.resolve(true);
-  if (ad.showing) return Promise.resolve(false);
+    if (isAdFresh()) return Promise.resolve(true);
+    if (ad.showing) return Promise.resolve(false);
 
-  if (ad.loadPromise) {
-    // A load is already running. If we are now allowed to show the consent
-    // form (and it may have been skipped), try once more after it finishes.
-    return allowConsentForm
-      ? ad.loadPromise.then((ok) => ok || loadAd({ allowConsentForm: true }))
-      : ad.loadPromise;
-  }
+    if (ad.loadPromise) {
+        // A load is already running. If we are now allowed to show the consent
+        // form (and it may have been skipped), try once more after it finishes.
+        return allowConsentForm
+            ? ad.loadPromise.then((ok) => ok || loadAd({ allowConsentForm: true }))
+            : ad.loadPromise;
+    }
 
-  ad.loadPromise = doLoad(allowConsentForm).finally(() => {
-    ad.loadPromise = null;
-  });
-  return ad.loadPromise;
+    ad.loadPromise = doLoad(allowConsentForm).finally(() => {
+        ad.loadPromise = null;
+    });
+    return ad.loadPromise;
 }
 
 function canShow(scene, isOffline) {
-  const now = Date.now();
+    const now = Date.now();
 
-  // safety nets in case an ad event was missed
-  if (ad.showing && now - ad.showingSince > 3 * 60 * 1000) ad.showing = false;
-  if (ad.otherAdOpenSince && now - ad.otherAdOpenSince > 3 * 60 * 1000) ad.otherAdOpenSince = 0;
+    // safety nets in case an ad event was missed
+    if (ad.showing && now - ad.showingSince > 3 * 60 * 1000) setShowing(false);
+    if (ad.otherAdOpenSince && now - ad.otherAdOpenSince > 3 * 60 * 1000) ad.otherAdOpenSince = 0;
 
-  let reason = '';
-  if (ad.showing || ad.consentFormOpen || ad.otherAdOpenSince) reason = 'another ad / form is open';
-  else if (isOffline) reason = 'offline';
-  else if (!SAFE_SCENES.includes(scene)) reason = `scene is ${scene}`;
-  else if (ad.launchCount < MIN_LAUNCHES_BEFORE_FIRST_AD) reason = `launch #${ad.launchCount} (first ad from launch #${MIN_LAUNCHES_BEFORE_FIRST_AD})`;
-  else if (now - ad.lastShownAt < MIN_INTERVAL_BETWEEN_ADS_MS) reason = 'last app open ad was less than 4 minutes ago';
-  else if (now - ad.lastAdActivityAt < 3000) reason = 'another ad just closed';
+    let reason = '';
+    if (ad.showing || ad.consentFormOpen || ad.otherAdOpenSince) reason = 'another ad / form is open';
+    else if (isOffline) reason = 'offline';
+    else if (!SAFE_SCENES.includes(scene)) reason = `scene is ${scene}`;
+    else if (ad.launchCount < MIN_LAUNCHES_BEFORE_FIRST_AD) reason = `launch #${ad.launchCount} (first ad from launch #${MIN_LAUNCHES_BEFORE_FIRST_AD})`;
+    else if (now - ad.lastShownAt < MIN_INTERVAL_BETWEEN_ADS_MS) reason = 'last app open ad was less than 4 minutes ago';
+    else if (now - ad.lastAdActivityAt < 3000) reason = 'another ad just closed';
 
-  if (reason) {
-    log('not showing:', reason);
-    return false;
-  }
-  return true;
+    if (reason) {
+        log('not showing:', reason);
+        return false;
+    }
+    return true;
 }
 
 async function showAd() {
-  if (!isAdFresh()) return false;
+    if (!isAdFresh()) return false;
 
-  log('showing app open ad');
-  ad.showing = true;
-  ad.showingSince = Date.now();
-  ad.loaded = false; // an app open ad can only be shown once
+    log('showing app open ad');
+    setShowing(true);
+    ad.showingSince = Date.now();
+    ad.loaded = false; // an app open ad can only be shown once
 
-  try {
-    await AdMob.showAppOpen();
-    return true;
-  } catch (e) {
-    console.warn('[AppOpenAd] show failed:', e?.message || JSON.stringify(e));
-    ad.showing = false;
-    loadAd();
-    return false;
-  }
+    try {
+        await AdMob.showAppOpen();
+        return true;
+    } catch (e) {
+        console.warn('[AppOpenAd] show failed:', e?.message || JSON.stringify(e));
+        setShowing(false);
+        loadAd({ allowConsentForm: true });
+        return false;
+    }
 }
 
 /* ======================== COMPONENT ======================== */
 
 export default function AppOpenAd({ scene, isOffline }) {
-  // always hold the newest props, so async callbacks never use old values
-  const propsRef = useRef({ scene, isOffline });
-  propsRef.current = { scene, isOffline };
+    // always hold the newest props, so async callbacks never use old values
+    const propsRef = useRef({ scene, isOffline });
+    propsRef.current = { scene, isOffline };
 
-  // 1) Register listeners (ad events + app foreground/background)
-  useEffect(() => {
-    if (!Capacitor.isNativePlatform()) return undefined; // AdMob works on device only
+    // 1) Register listeners (ad events + app foreground/background)
+    useEffect(() => {
+        if (!Capacitor.isNativePlatform()) return undefined; // AdMob works on device only
 
-    countLaunch();
-    log('component started. launch #', ad.launchCount);
+        countLaunch();
+        log('component started. launch #', ad.launchCount);
 
-    let cancelled = false;
-    const handles = [];
+        let cancelled = false;
+        const handles = [];
 
-    const listen = async (target, eventName, callback) => {
-      try {
-        const handle = await target.addListener(eventName, callback);
-        if (cancelled) {
-          handle.remove();
-        } else {
-          handles.push(handle);
+        const listen = async (target, eventName, callback) => {
+            try {
+                const handle = await target.addListener(eventName, callback);
+                if (cancelled) {
+                    handle.remove();
+                } else {
+                    handles.push(handle);
+                }
+            } catch (e) {
+                log('listener error', eventName, e);
+            }
+        };
+
+        // --- App Open ad events
+        listen(AdMob, AppOpenAdPluginEvents.Loaded, () => {
+            log('app open ad loaded (event)');
+        });
+
+        listen(AdMob, AppOpenAdPluginEvents.FailedToLoad, (error) => {
+            log('app open ad failed to load (event)', JSON.stringify(error));
+        });
+
+        listen(AdMob, AppOpenAdPluginEvents.Opened, () => {
+            const now = Date.now();
+            setShowing(true);
+            ad.showingSince = now;
+            ad.lastShownAt = now;
+            ad.lastAdActivityAt = now;
+            writeNumber(LAST_SHOWN_KEY, now);
+            log('app open ad opened');
+        });
+
+        listen(AdMob, AppOpenAdPluginEvents.Closed, () => {
+            setShowing(false);
+            ad.lastAdActivityAt = Date.now();
+            ad.backgroundedAt = 0;
+            log('app open ad closed');
+            loadAd({ allowConsentForm: true }); // prepare the next one
+        });
+
+        listen(AdMob, AppOpenAdPluginEvents.FailedToShow, (error) => {
+            log('app open ad failed to show', JSON.stringify(error));
+            setShowing(false);
+            ad.loaded = false;
+            loadAd({ allowConsentForm: true });
+        });
+
+        // --- Other full-screen ads: never show app open on top of them
+        const otherOpened = () => {
+            ad.otherAdOpenSince = Date.now();
+            ad.lastAdActivityAt = Date.now();
+        };
+        const otherClosed = () => {
+            ad.otherAdOpenSince = 0;
+            ad.lastAdActivityAt = Date.now();
+            ad.backgroundedAt = 0;
+        };
+        listen(AdMob, InterstitialAdPluginEvents.Showed, otherOpened);
+        listen(AdMob, InterstitialAdPluginEvents.Dismissed, otherClosed);
+        listen(AdMob, RewardAdPluginEvents.Showed, otherOpened);
+        listen(AdMob, RewardAdPluginEvents.Dismissed, otherClosed);
+        listen(AdMob, BannerAdPluginEvents.Opened, otherOpened); // user tapped a banner
+        listen(AdMob, BannerAdPluginEvents.Closed, otherClosed);
+
+        // --- User leaves / returns to the app
+        const onBackground = () => {
+            if (ad.backgroundedAt) return;
+            if (ad.showing || ad.otherAdOpenSince || ad.consentFormOpen) return;
+            ad.backgroundedAt = Date.now();
+            log('app went to background');
+        };
+
+        const onForeground = () => {
+            const away = ad.backgroundedAt ? Date.now() - ad.backgroundedAt : 0;
+            ad.backgroundedAt = 0;
+            if (away) log('app came back. away (seconds):', Math.round(away / 1000));
+
+            // keep one ad ready for next time
+            if (!isAdFresh()) {
+                ad.retries = 0;
+                loadAd({ allowConsentForm: true });
+            }
+
+            if (!SHOW_ON_RESUME || away < MIN_BACKGROUND_MS) return;
+
+            const { scene: currentScene, isOffline: offline } = propsRef.current;
+            if (isAdFresh() && canShow(currentScene, offline)) {
+                showAd();
+            } else if (!isAdFresh()) {
+                log('not showing: ad is not ready yet');
+            }
+        };
+
+        // Capacitor event
+        listen(CapApp, 'appStateChange', ({ isActive }) => {
+            if (isActive) onForeground();
+            else onBackground();
+        });
+
+        // Backup: works even if some other code removes Capacitor App listeners
+        const onVisibility = () => {
+            if (document.visibilityState === 'hidden') onBackground();
+            else onForeground();
+        };
+        document.addEventListener('visibilitychange', onVisibility);
+
+        return () => {
+            cancelled = true;
+            clearTimeout(ad.retryTimer);
+            clearShowingStuckTimer();
+            document.removeEventListener('visibilitychange', onVisibility);
+            handles.forEach((handle) => handle.remove());
+        };
+    }, []);
+
+    // 2) Preload the ad in the background (during splash) and again when internet returns.
+    //    allowConsentForm: true so any required consent form appears during splash,
+    //    not gated behind the tight cold-start timeout below.
+    useEffect(() => {
+        if (!Capacitor.isNativePlatform() || isOffline) return;
+        if (!isAdFresh()) {
+            ad.retries = 0;
+            loadAd({ allowConsentForm: true });
         }
-      } catch (e) {
-        log('listener error', eventName, e);
-      }
-    };
+    }, [isOffline]);
 
-    // --- App Open ad events
-    listen(AdMob, AppOpenAdPluginEvents.Opened, () => {
-      const now = Date.now();
-      ad.showing = true;
-      ad.showingSince = now;
-      ad.lastShownAt = now;
-      ad.lastAdActivityAt = now;
-      writeNumber(LAST_SHOWN_KEY, now);
-      log('app open ad opened');
-    });
+    // 3) Splash finished -> show the ad (only if it is ready in time)
+    useEffect(() => {
+        if (!Capacitor.isNativePlatform()) return;
+        if (scene === 'SPLASH' || ad.coldStartHandled) return;
+        ad.coldStartHandled = true;
+        if (!SHOW_ON_COLD_START) return;
 
-    listen(AdMob, AppOpenAdPluginEvents.Closed, () => {
-      ad.showing = false;
-      ad.lastAdActivityAt = Date.now();
-      ad.backgroundedAt = 0;
-      log('app open ad closed');
-      loadAd(); // prepare the next one
-    });
+        (async () => {
+            log('splash finished, waiting for ad...');
 
-    listen(AdMob, AppOpenAdPluginEvents.FailedToShow, (error) => {
-      log('app open ad failed to show', JSON.stringify(error));
-      ad.showing = false;
-      ad.loaded = false;
-      loadAd();
-    });
+            // wait for the ad, but never longer than COLD_START_MAX_WAIT_MS
+            await Promise.race([loadAd({ allowConsentForm: true }), sleep(COLD_START_MAX_WAIT_MS)]);
 
-    // --- Other full-screen ads: never show app open on top of them
-    const otherOpened = () => {
-      ad.otherAdOpenSince = Date.now();
-      ad.lastAdActivityAt = Date.now();
-    };
-    const otherClosed = () => {
-      ad.otherAdOpenSince = 0;
-      ad.lastAdActivityAt = Date.now();
-      ad.backgroundedAt = 0;
-    };
-    listen(AdMob, InterstitialAdPluginEvents.Showed, otherOpened);
-    listen(AdMob, InterstitialAdPluginEvents.Dismissed, otherClosed);
-    listen(AdMob, RewardAdPluginEvents.Showed, otherOpened);
-    listen(AdMob, RewardAdPluginEvents.Dismissed, otherClosed);
-    listen(AdMob, BannerAdPluginEvents.Opened, otherOpened); // user tapped a banner
-    listen(AdMob, BannerAdPluginEvents.Closed, otherClosed);
+            // small pause so the Home screen fade-in finishes first
+            await sleep(350);
 
-    // --- User leaves / returns to the app
-    const onBackground = () => {
-      if (ad.backgroundedAt) return;
-      if (ad.showing || ad.otherAdOpenSince || ad.consentFormOpen) return;
-      ad.backgroundedAt = Date.now();
-      log('app went to background');
-    };
+            const { scene: currentScene, isOffline: offline } = propsRef.current;
+            if (isAdFresh() && canShow(currentScene, offline)) {
+                showAd();
+            } else if (!isAdFresh()) {
+                log('not showing: ad was not ready in time');
+            }
+        })();
+    }, [scene]);
 
-    const onForeground = () => {
-      const away = ad.backgroundedAt ? Date.now() - ad.backgroundedAt : 0;
-      ad.backgroundedAt = 0;
-      if (away) log('app came back. away (seconds):', Math.round(away / 1000));
-
-      // keep one ad ready for next time
-      if (!isAdFresh()) {
-        ad.retries = 0;
-        loadAd();
-      }
-
-      if (!SHOW_ON_RESUME || away < MIN_BACKGROUND_MS) return;
-
-      const { scene: currentScene, isOffline: offline } = propsRef.current;
-      if (isAdFresh() && canShow(currentScene, offline)) {
-        showAd();
-      } else if (!isAdFresh()) {
-        log('not showing: ad is not ready yet');
-      }
-    };
-
-    // Capacitor event
-    listen(CapApp, 'appStateChange', ({ isActive }) => {
-      if (isActive) onForeground();
-      else onBackground();
-    });
-
-    // Backup: works even if some other code removes Capacitor App listeners
-    const onVisibility = () => {
-      if (document.visibilityState === 'hidden') onBackground();
-      else onForeground();
-    };
-    document.addEventListener('visibilitychange', onVisibility);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(ad.retryTimer);
-      document.removeEventListener('visibilitychange', onVisibility);
-      handles.forEach((handle) => handle.remove());
-    };
-  }, []);
-
-  // 2) Preload the ad in the background (during splash) and again when internet returns
-  useEffect(() => {
-    if (!Capacitor.isNativePlatform() || isOffline) return;
-    if (!isAdFresh()) {
-      ad.retries = 0;
-      loadAd();
-    }
-  }, [isOffline]);
-
-  // 3) Splash finished -> show the ad (only if it is ready in time)
-  useEffect(() => {
-    if (!Capacitor.isNativePlatform()) return;
-    if (scene === 'SPLASH' || ad.coldStartHandled) return;
-    ad.coldStartHandled = true;
-    if (!SHOW_ON_COLD_START) return;
-
-    (async () => {
-      log('splash finished, waiting for ad...');
-
-      // wait for the ad, but never longer than COLD_START_MAX_WAIT_MS
-      await Promise.race([loadAd({ allowConsentForm: true }), sleep(COLD_START_MAX_WAIT_MS)]);
-
-      // small pause so the Home screen fade-in finishes first
-      await sleep(350);
-
-      const { scene: currentScene, isOffline: offline } = propsRef.current;
-      if (isAdFresh() && canShow(currentScene, offline)) {
-        showAd();
-      } else if (!isAdFresh()) {
-        log('not showing: ad was not ready in time');
-      }
-    })();
-  }, [scene]);
-
-  return null;
+    return null;
 }

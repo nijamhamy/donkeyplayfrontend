@@ -11,6 +11,38 @@ import ExitModal from '../components/ExitModal';
 import { createShuffledDeck } from '../logic/gameLogic';
 
 
+// ---------- Visual-only constants (no game logic) ----------
+const AMBIENT = [
+    ['♠', 6, 22, 30], ['♥', 18, 28, 44], ['♦', 30, 20, 26], ['♣', 44, 30, 38],
+    ['♠', 58, 24, 34], ['♥', 70, 26, 28], ['♦', 82, 22, 42], ['♣', 92, 28, 32],
+];
+const CONFETTI = Array.from({ length: 22 }, (_, i) => {
+    const a = (i / 22) * Math.PI * 2;
+    const d = 110 + (i % 3) * 40;
+    return { x: Math.cos(a) * d, y: Math.sin(a) * d, s: ['♠', '♥', '♦', '♣', '★'][i % 5], red: i % 5 === 1 || i % 5 === 2, delay: (i % 6) * 0.04 };
+});
+const POINTER_ANGLE = { p3: 0, p4: 90, p1: 180, p2: 270 };
+
+// Soft glowing halo behind an opponent when it is their turn (module level = stable component)
+const Halo = ({ active }) => (
+    <AnimatePresence>
+        {active && (
+            <motion.div
+                key="halo"
+                initial={{ opacity: 0, scale: 0.8 }}
+                animate={{ opacity: [0.5, 1, 0.5], scale: [1, 1.12, 1] }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 1.3, repeat: Infinity, ease: 'easeInOut' }}
+                style={{
+                    position: 'absolute', inset: -16, zIndex: -1, pointerEvents: 'none', borderRadius: 28,
+                    background: 'radial-gradient(circle, rgba(250,204,21,.55) 0%, rgba(250,204,21,0) 70%)',
+                }}
+            />
+        )}
+    </AnimatePresence>
+);
+
+
 export default function Game({ onExit, onFinish, externalShowExit, setExternalShowExit }) {
     const [hands, setHands] = useState({ p1: [], p2: [], p3: [], p4: [] });
     const [table, setTable] = useState([]);
@@ -50,6 +82,8 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
     const adPreloaded = useRef(false);
     const adLoading = useRef(false);
     const finishTriggered = useRef(false);
+    const exitTriggered = useRef(false);
+    const pendingAfterAdRef = useRef(null);
     const firstRoundPlayed = useRef(false);
     const finalRanksRef = useRef([]);
 
@@ -227,7 +261,67 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
     }, []);
 
 
-    const showAdAndFinish = useCallback(async (finalRanks) => {
+    // ============================================================
+    // NEW: runAfterAd — generic helper that shows the preloaded
+    // interstitial (if ready) and runs `callback` once the ad is
+    // dismissed. If no ad is ready within ~3s, it runs `callback`
+    // immediately instead of making the user wait. Used by BOTH the
+    // "match finished" flow and the new "exit game" flow so they
+    // share the exact same ad instance/listeners without conflicts.
+    // ============================================================
+    const runAfterAd = useCallback(async (callback) => {
+        if (finishBlockedRef.current || !isMountedRef.current) {
+            callback();
+            return;
+        }
+
+        // If another ad-then-callback flow is already pending, don't
+        // stack a second one — just run this callback right away so
+        // the user never gets stuck.
+        if (pendingAfterAdRef.current) {
+            callback();
+            return;
+        }
+
+        pendingAfterAdRef.current = callback;
+
+        const fallbackTimeoutId = addTimer(setTimeout(() => {
+            if (pendingAfterAdRef.current === callback) {
+                pendingAfterAdRef.current = null;
+                callback();
+            }
+        }, 3000));
+
+        try {
+            if (adPreloaded.current) {
+                clearTimeout(fallbackTimeoutId);
+                await AdMob.showInterstitial();
+                return;
+            }
+
+            await preloadInterstitial();
+
+            if (adPreloaded.current) {
+                clearTimeout(fallbackTimeoutId);
+                await AdMob.showInterstitial();
+            } else {
+                clearTimeout(fallbackTimeoutId);
+                if (pendingAfterAdRef.current === callback) {
+                    pendingAfterAdRef.current = null;
+                    callback();
+                }
+            }
+        } catch (e) {
+            clearTimeout(fallbackTimeoutId);
+            if (pendingAfterAdRef.current === callback) {
+                pendingAfterAdRef.current = null;
+                callback();
+            }
+        }
+    }, [preloadInterstitial]);
+
+
+    const showAdAndFinish = useCallback((finalRanks) => {
         if (finishTriggered.current) return;
         if (finishBlockedRef.current) return;
         if (!Array.isArray(finalRanks) || !finalRanks.length) return;
@@ -237,38 +331,30 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
         finalRanksRef.current = finalRanks;
 
 
-        const goResults = () => {
+        runAfterAd(() => {
             safeGoResults(finalRanksRef.current);
-        };
+        });
+    }, [runAfterAd, safeGoResults]);
 
 
-        try {
-            const timeoutId = addTimer(setTimeout(() => {
-                goResults();
-            }, 3000));
+    // ============================================================
+    // NEW: showAdAndExit — called when the user confirms leaving the
+    // match via the back button / back arrow + "Yes" on ExitModal.
+    // Shows the interstitial (if ready) and only leaves to Home once
+    // the ad is dismissed — never blocks the user longer than ~3s.
+    // ============================================================
+    const showAdAndExit = useCallback(() => {
+        if (exitTriggered.current) return;
+        if (finishTriggered.current) return; // match already ending its own way
+        exitTriggered.current = true;
 
-
-            if (adPreloaded.current) {
-                clearTimeout(timeoutId);
-                await AdMob.showInterstitial();
-                return;
+        runAfterAd(() => {
+            if (isMountedRef.current) {
+                setExternalShowExit(false);
             }
-
-
-            await preloadInterstitial();
-
-
-            if (adPreloaded.current) {
-                clearTimeout(timeoutId);
-                await AdMob.showInterstitial();
-            } else {
-                clearTimeout(timeoutId);
-                goResults();
-            }
-        } catch (e) {
-            goResults();
-        }
-    }, [preloadInterstitial, safeGoResults]);
+            onExit();
+        });
+    }, [runAfterAd, onExit, setExternalShowExit]);
 
 
     const finalizeRanksIfNeeded = useCallback((currentRanks) => {
@@ -429,7 +515,14 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
 
             try {
                 const dismissed = await AdMob.addListener(InterstitialAdPluginEvents.Dismissed, async () => {
-                    safeGoResults(finalRanksRef.current);
+                    const cb = pendingAfterAdRef.current;
+                    pendingAfterAdRef.current = null;
+                    if (cb) {
+                        cb();
+                    } else {
+                        // Fallback for any legacy path with no pending callback registered
+                        safeGoResults(finalRanksRef.current);
+                    }
                     adPreloaded.current = false;
                     await preloadInterstitial();
                 });
@@ -437,7 +530,11 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
 
                 const failed = await AdMob.addListener(InterstitialAdPluginEvents.FailedToLoad, () => {
                     adPreloaded.current = false;
-                    safeGoResults(finalRanksRef.current);
+                    const cb = pendingAfterAdRef.current;
+                    if (cb) {
+                        pendingAfterAdRef.current = null;
+                        cb();
+                    }
                 });
 
 
@@ -862,8 +959,33 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
     };
 
 
+    // ---------- Visual-only helpers (no game logic) ----------
+    const nameByPos = { p3: actorNames.current[0] || 'Actor 3', p2: actorNames.current[1] || 'Actor 2', p4: actorNames.current[2] || 'Actor 4' };
+    const turnCaption = isDealing
+        ? 'Shuffling & dealing...'
+        : turn === 'p1'
+            ? 'Your turn - play a card'
+            : turn
+                ? `${nameByPos[turn]} is thinking...`
+                : '';
+    const isMyTurn = turn === 'p1' && !isDealing;
+
+
     return (
         <div className="game-root position-relative overflow-hidden bg-black" style={{ width: "100%", height: "100dvh" }}>
+
+            {/* ===== ENVIRONMENT: casino room, spotlight, floating suits ===== */}
+            <div className="env-room" />
+            <div className="env-spot" />
+            {AMBIENT.map(([s, left, size, dur], i) => (
+                <span key={i} className="env-suit"
+                    style={{ left: `${left}%`, fontSize: size, animationDuration: `${dur}s`, animationDelay: `${-i * 4}s`, color: (s === '♥' || s === '♦') ? '#fca5a5' : '#bbf7d0' }}>
+                    {s}
+                </span>
+            ))}
+            <div className="env-vignette" />
+
+            {/* ===== TOP BAR ===== */}
             <div
                 className="position-absolute top-0 w-100 d-flex justify-content-between align-items-center"
                 style={{
@@ -875,75 +997,95 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
                 }}
             >
                 <button
-                    className="btn btn-sm text-white bg-dark bg-opacity-75 rounded-circle p-2 shadow-lg d-flex align-items-center justify-content-center"
+                    className="btn3d-round d-flex align-items-center justify-content-center"
                     onClick={() => setExternalShowExit(true)}
-                    style={{
-                        pointerEvents: 'auto',
-                        width: '45px',
-                        height: '45px',
-                        border: '1px solid rgba(255,255,255,0.2)'
-                    }}
+                    style={{ pointerEvents: 'auto' }}
+                    aria-label="Exit game"
                 >
-                    <ArrowLeft size={28} />
+                    <ArrowLeft size={26} />
                 </button>
 
 
-                <div
-                    className="bg-warning text-dark px-3 py-2 rounded-pill fw-bold shadow-sm"
-                    style={{
-                        pointerEvents: 'auto',
-                        fontSize: '0.8rem',
-                        border: '1px solid rgba(0,0,0,0.1)'
-                    }}
-                >
-                    Discarded: {discardedPile.length}
+                <div className="discard-pill d-flex align-items-center gap-2" style={{ pointerEvents: 'auto' }}>
+                    <span className="discard-stack">
+                        <i style={{ transform: 'rotate(-12deg)' }} />
+                        <i style={{ transform: 'rotate(0deg)' }} />
+                        <i style={{ transform: 'rotate(12deg)' }}>♠</i>
+                    </span>
+                    <span>Discarded: <b>{discardedPile.length}</b></span>
                 </div>
             </div>
 
 
+            {/* ===== OPPONENTS ===== */}
             <div className="position-absolute top-0 start-50 translate-middle-x mt-5 pt-4" style={{ zIndex: 1500 }}>
-                <PlayerSlot
-                    pos="p3"
-                    name={actorNames.current[0] || "Actor 3"}
-                    count={hands.p3.length}
-                    isTurn={turn === 'p3'}
-                    winnerInfo={winners.find(w => w.id === 'p3') ? { ...winners.find(w => w.id === 'p3'), text: getProfileLabel('p3') } : null}
-                    isHighValue={highValuePlayer === 'p3'}
-                    isStriker={striker === 'p3'}
-                />
+                <div className="position-relative">
+                    <Halo active={turn === 'p3' && !isDealing} />
+                    <PlayerSlot
+                        pos="p3"
+                        name={actorNames.current[0] || "Actor 3"}
+                        count={hands.p3.length}
+                        isTurn={turn === 'p3'}
+                        winnerInfo={winners.find(w => w.id === 'p3') ? { ...winners.find(w => w.id === 'p3'), text: getProfileLabel('p3') } : null}
+                        isHighValue={highValuePlayer === 'p3'}
+                        isStriker={striker === 'p3'}
+                    />
+                </div>
             </div>
 
 
             <div className="position-absolute start-0 top-50 translate-middle-y ms-2" style={{ zIndex: 1500, transform: 'translateY(-120px)' }}>
-                <PlayerSlot
-                    pos="p2"
-                    name={actorNames.current[1] || "Actor 2"}
-                    count={hands.p2.length}
-                    isTurn={turn === 'p2'}
-                    winnerInfo={winners.find(w => w.id === 'p2') ? { ...winners.find(w => w.id === 'p2'), text: getProfileLabel('p2') } : null}
-                    isHighValue={highValuePlayer === 'p2'}
-                    isStriker={striker === 'p2'}
-                />
+                <div className="position-relative">
+                    <Halo active={turn === 'p2' && !isDealing} />
+                    <PlayerSlot
+                        pos="p2"
+                        name={actorNames.current[1] || "Actor 2"}
+                        count={hands.p2.length}
+                        isTurn={turn === 'p2'}
+                        winnerInfo={winners.find(w => w.id === 'p2') ? { ...winners.find(w => w.id === 'p2'), text: getProfileLabel('p2') } : null}
+                        isHighValue={highValuePlayer === 'p2'}
+                        isStriker={striker === 'p2'}
+                    />
+                </div>
             </div>
 
 
             <div className="position-absolute end-0 top-50 translate-middle-y me-2" style={{ zIndex: 1500, transform: 'translateY(-120px)' }}>
-                <PlayerSlot
-                    pos="p4"
-                    name={actorNames.current[2] || "Actor 4"}
-                    count={hands.p4.length}
-                    isTurn={turn === 'p4'}
-                    winnerInfo={winners.find(w => w.id === 'p4') ? { ...winners.find(w => w.id === 'p4'), text: getProfileLabel('p4') } : null}
-                    isHighValue={highValuePlayer === 'p4'}
-                    isStriker={striker === 'p4'}
-                />
+                <div className="position-relative">
+                    <Halo active={turn === 'p4' && !isDealing} />
+                    <PlayerSlot
+                        pos="p4"
+                        name={actorNames.current[2] || "Actor 4"}
+                        count={hands.p4.length}
+                        isTurn={turn === 'p4'}
+                        winnerInfo={winners.find(w => w.id === 'p4') ? { ...winners.find(w => w.id === 'p4'), text: getProfileLabel('p4') } : null}
+                        isHighValue={highValuePlayer === 'p4'}
+                        isStriker={striker === 'p4'}
+                    />
+                </div>
             </div>
 
 
+            {/* ===== THE TABLE ===== */}
             <div
-                className="position-absolute top-50 start-50 translate-middle rounded-circle shadow-lg"
-                style={{ width: '280px', height: '280px', background: 'radial-gradient(circle, #1a4d2e 0%, #0a2414 100%)', zIndex: 100, border: '4px solid rgba(255,255,255,0.1)' }}
+                className={`position-absolute top-50 start-50 translate-middle rounded-circle game-table ${isMyTurn ? 'table-mine' : ''}`}
+                style={{ width: '280px', height: '280px', zIndex: 100 }}
             >
+                {/* felt texture + centre emblem */}
+                <div className="table-felt" />
+                <div className="table-emblem">♠</div>
+                <div className="table-ring" />
+
+                {/* rotating turn pointer */}
+                <motion.div
+                    className="turn-pointer"
+                    initial={false}
+                    animate={{ rotate: POINTER_ANGLE[turn] ?? 0, opacity: turn && !isDealing ? 1 : 0 }}
+                    transition={{ type: 'spring', stiffness: 120, damping: 14 }}
+                >
+                    <span />
+                </motion.div>
+
                 <div className="d-flex h-100 justify-content-center align-items-center position-relative">
                     <AnimatePresence>
                         {table.map((c, i) => {
@@ -960,11 +1102,12 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
                             return (
                                 <motion.div
                                     key={c.id}
-                                    initial={{ scale: 0, opacity: 0 }}
-                                    animate={{ x: p.x, y: p.y, scale: 1, opacity: 1 }}
+                                    initial={{ scale: 0, opacity: 0, rotate: -25 }}
+                                    animate={{ x: p.x, y: p.y, scale: 1, opacity: 1, rotate: 0 }}
                                     exit={{ x: exX, y: exY, scale: 0, opacity: 0, transition: { duration: 0.4 } }}
+                                    transition={{ type: 'spring', stiffness: 260, damping: 18 }}
                                     className="position-absolute"
-                                    style={{ zIndex: 500 + i }}
+                                    style={{ zIndex: 500 + i, filter: 'drop-shadow(0 8px 8px rgba(0,0,0,.6))' }}
                                 >
                                     <CardView card={c} />
                                 </motion.div>
@@ -972,23 +1115,46 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
                         })}
                     </AnimatePresence>
                 </div>
+
+                {/* dealing animation */}
+                <AnimatePresence>
+                    {isDealing && (
+                        <motion.div
+                            key="dealing"
+                            className="dealing-overlay"
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0, scale: 1.3 }}
+                        >
+                            <motion.div animate={{ rotate: 360 }} transition={{ duration: 1.6, repeat: Infinity, ease: 'linear' }} className="deal-orbit">
+                                <span style={{ color: '#fff' }}>♠</span>
+                                <span style={{ color: '#f87171' }}>♥</span>
+                                <span style={{ color: '#fff' }}>♣</span>
+                                <span style={{ color: '#f87171' }}>♦</span>
+                            </motion.div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
             </div>
+
+            {/* turn caption under the table */}
+            {turnCaption && !myRankInfo && (
+                <motion.div
+                    key={turnCaption}
+                    initial={{ opacity: 0, y: 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className={`turn-caption ${isMyTurn ? 'mine' : ''}`}
+                >
+                    {turnCaption}
+                </motion.div>
+            )}
 
 
             {/*
               ================================================================
-              BOTTOM PLAYER HAND PANEL — PREMIUM REDESIGN
-              ================================================================
-              FIX: Hand cards were getting hidden/overlapped behind the Android
-              navigation bar because Android WebViews frequently report
-              env(safe-area-inset-bottom) as 0px (unlike iOS), so the previous
-              fallback wasn't enough on gesture-nav / 3-button-nav devices.
-
-              Now using CSS max() to guarantee a solid minimum buffer
-              (34px) REGARDLESS of what the device reports, while still
-              respecting a larger real inset (notch / gesture bar) when the
-              OS does report one correctly. No game logic touched below —
-              only this panel's container styling/visuals changed.
+              BOTTOM PLAYER HAND PANEL
+              Uses max() so cards never hide behind the Android navigation bar,
+              even when env(safe-area-inset-bottom) reports 0px.
               ================================================================
             */}
             <div
@@ -1005,12 +1171,12 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
                 {/* Animated glow divider at the top edge of the panel */}
                 <motion.div
                     className="position-absolute top-0 start-0 w-100"
-                    style={{ height: '2px', pointerEvents: 'none' }}
+                    style={{ height: '3px', pointerEvents: 'none' }}
                     animate={{
                         background: [
-                            'linear-gradient(90deg, rgba(25,135,84,0) 0%, rgba(25,135,84,0.9) 50%, rgba(25,135,84,0) 100%)',
-                            'linear-gradient(90deg, rgba(255,215,0,0) 0%, rgba(255,215,0,0.7) 50%, rgba(255,215,0,0) 100%)',
-                            'linear-gradient(90deg, rgba(25,135,84,0) 0%, rgba(25,135,84,0.9) 50%, rgba(25,135,84,0) 100%)'
+                            'linear-gradient(90deg, rgba(25,135,84,0) 0%, rgba(25,135,84,0.95) 50%, rgba(25,135,84,0) 100%)',
+                            'linear-gradient(90deg, rgba(255,215,0,0) 0%, rgba(255,215,0,0.85) 50%, rgba(255,215,0,0) 100%)',
+                            'linear-gradient(90deg, rgba(25,135,84,0) 0%, rgba(25,135,84,0.95) 50%, rgba(25,135,84,0) 100%)'
                         ]
                     }}
                     transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
@@ -1022,7 +1188,9 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
                         animate={{ opacity: 1, y: 0 }}
                         className="text-center py-2"
                     >
-                        <Trophy size={45} className="text-warning mb-1" />
+                        <motion.div animate={{ rotateY: 360 }} transition={{ duration: 4, repeat: Infinity, ease: 'linear' }} style={{ display: 'inline-block' }}>
+                            <Trophy size={45} className="text-warning mb-1" />
+                        </motion.div>
                         <div className="text-warning fw-bold h5">{getProfileLabel('p1')}</div>
                     </motion.div>
                 ) : (
@@ -1032,16 +1200,16 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
                                 You
                             </span>
                             <motion.span
-                                animate={turn === 'p1' ? { scale: [1, 1.05, 1] } : { scale: 1 }}
+                                animate={turn === 'p1' ? { scale: [1, 1.07, 1] } : { scale: 1 }}
                                 transition={turn === 'p1' ? { duration: 1.2, repeat: Infinity, ease: 'easeInOut' } : {}}
                                 className="px-3 py-1 rounded-pill small fw-bold"
                                 style={{
                                     background: turn === 'p1'
-                                        ? 'linear-gradient(135deg, #ffd700, #c9a400)'
+                                        ? 'linear-gradient(135deg, #ffe066, #d4a900)'
                                         : 'rgba(255,255,255,0.08)',
                                     color: turn === 'p1' ? '#1a0f00' : 'rgba(255,255,255,0.65)',
                                     border: turn === 'p1' ? 'none' : '1px solid rgba(255,255,255,0.15)',
-                                    boxShadow: turn === 'p1' ? '0 3px 12px rgba(255,215,0,0.35)' : 'none'
+                                    boxShadow: turn === 'p1' ? '0 4px 0 #8a6d00, 0 6px 16px rgba(255,215,0,0.45)' : 'none'
                                 }}
                             >
                                 HAND: {hands.p1.length}
@@ -1058,13 +1226,16 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
                                 return (
                                     <motion.div
                                         key={c.id}
-                                        initial={{ y: -250, opacity: 0 }}
-                                        animate={{ y: (turn === 'p1' && eligible) ? -25 : 0, scale: 1, opacity: 1 }}
+                                        initial={{ y: -250, opacity: 0, rotate: -20 }}
+                                        animate={{ y: (turn === 'p1' && eligible) ? -25 : 0, scale: 1, opacity: 1, rotate: 0 }}
                                         transition={{ delay: isDealing ? i * 0.08 : 0, type: 'spring', stiffness: 300, damping: 20 }}
                                         style={{
                                             marginLeft: i === 0 ? 0 : -overlap,
                                             zIndex: (turn === 'p1' && eligible) ? 200 + i : i,
-                                            opacity: (turn === 'p1' && !eligible) ? 0.6 : 1
+                                            opacity: (turn === 'p1' && !eligible) ? 0.6 : 1,
+                                            filter: (turn === 'p1' && eligible)
+                                                ? 'drop-shadow(0 0 7px rgba(250,204,21,.95))'
+                                                : 'drop-shadow(0 5px 4px rgba(0,0,0,.55))'
                                         }}
                                     >
                                         <CardView card={c} isInteractive={turn === 'p1' && eligible} onClick={() => playCard('p1', i)} />
@@ -1077,32 +1248,141 @@ export default function Game({ onExit, onFinish, externalShowExit, setExternalSh
             </div>
 
 
+            {/* ===== WINNER POPUP ===== */}
             <AnimatePresence>{showWinnerPopup && (
                 <motion.div
-                    initial={{ scale: 0.5, opacity: 0 }}
-                    animate={{ scale: 1, opacity: 1 }}
-                    className="position-absolute top-50 start-50 translate-middle text-center p-4 rounded-4 bg-dark border border-warning shadow-lg"
-                    style={{ zIndex: 4000, width: '280px' }}
+                    initial={{ scale: 0.3, opacity: 0, rotateX: 70 }}
+                    animate={{ scale: 1, opacity: 1, rotateX: 0 }}
+                    exit={{ scale: 0.6, opacity: 0 }}
+                    transition={{ type: 'spring', stiffness: 200, damping: 14 }}
+                    className="position-absolute top-50 start-50 translate-middle text-center p-4 rounded-4 winner-card"
+                    style={{ zIndex: 4000, width: '290px' }}
                 >
-                    <div className="display-4">🥇</div>
-                    <h2 className="text-warning fw-bold mt-2">WINNER!</h2>
-                    <button className="btn btn-warning w-100 fw-bold mt-2 rounded-pill" onClick={() => setShowWinnerPopup(false)}>Watch</button>
+                    {CONFETTI.map((c, i) => (
+                        <motion.span
+                            key={i}
+                            initial={{ x: 0, y: 0, opacity: 1, scale: 0.4 }}
+                            animate={{ x: c.x, y: c.y, opacity: 0, scale: 1.4, rotate: 360 }}
+                            transition={{ duration: 1.6, delay: c.delay, ease: 'easeOut', repeat: Infinity, repeatDelay: 1.2 }}
+                            style={{ position: 'absolute', left: '50%', top: '40%', fontSize: 20, pointerEvents: 'none', color: c.red ? '#f87171' : '#fde047' }}
+                        >
+                            {c.s}
+                        </motion.span>
+                    ))}
+                    <motion.div
+                        className="display-4"
+                        animate={{ scale: [1, 1.2, 1], rotate: [-6, 6, -6] }}
+                        transition={{ duration: 1.4, repeat: Infinity }}
+                    >
+                        🥇
+                    </motion.div>
+                    <h2 className="winner-title fw-bold mt-2">WINNER!</h2>
+                    <button className="btn3d-gold w-100 fw-bold mt-2" onClick={() => setShowWinnerPopup(false)}>Watch</button>
                 </motion.div>
             )}</AnimatePresence>
 
 
-            {externalShowExit && <ExitModal onCancel={() => setExternalShowExit(false)} onConfirm={onExit} />}
+            {externalShowExit && <ExitModal onCancel={() => setExternalShowExit(false)} onConfirm={showAdAndExit} />}
             <style>{`
                 .fw-black { font-weight: 900; }
                 .x-small { font-size: 0.65rem; }
-                .game-root { height: 100dvh !important; padding-bottom: env(safe-area-inset-bottom, 0px); box-sizing: border-box; }
+                .game-root { height: 100dvh !important; padding-bottom: env(safe-area-inset-bottom, 0px); box-sizing: border-box; user-select: none; -webkit-tap-highlight-color: transparent; }
+
+                /* ---- environment ---- */
+                .env-room { position:absolute; inset:0; z-index:0; pointer-events:none;
+                    background:
+                      radial-gradient(ellipse at 50% 42%, #14703f 0%, #0b4527 38%, #062615 70%, #02100a 100%); }
+                .env-room::after { content:''; position:absolute; inset:0;
+                    background: repeating-linear-gradient(45deg, rgba(255,255,255,.03) 0 2px, transparent 2px 7px); }
+                .env-spot { position:absolute; left:50%; top:-10%; width:130%; height:75%; margin-left:-65%; z-index:1; pointer-events:none;
+                    background: radial-gradient(ellipse at 50% 0%, rgba(255,244,190,.28) 0%, rgba(255,244,190,0) 65%);
+                    animation: spotSway 7s ease-in-out infinite; transform-origin: 50% 0; }
+                @keyframes spotSway { 0%,100% { transform: rotate(-3deg); } 50% { transform: rotate(3deg); } }
+                .env-suit { position:absolute; bottom:-60px; z-index:1; font-weight:900; opacity:.12; pointer-events:none;
+                    animation: envRise linear infinite; }
+                @keyframes envRise { from { transform: translateY(0) rotate(0); } to { transform: translateY(-115vh) rotate(360deg); } }
+                .env-vignette { position:absolute; inset:0; z-index:2; pointer-events:none;
+                    background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,.65) 100%); }
+
+                /* ---- top bar ---- */
+                .btn3d-round { width:46px; height:46px; border-radius:50%; border:0; color:#fff; cursor:pointer;
+                    background: linear-gradient(#4b5563, #111827);
+                    box-shadow: 0 5px 0 #000, 0 9px 12px rgba(0,0,0,.55), inset 0 2px 0 rgba(255,255,255,.25);
+                    transition: transform .08s, box-shadow .08s; }
+                .btn3d-round:active { transform: translateY(4px); box-shadow: 0 1px 0 #000, 0 3px 6px rgba(0,0,0,.5); }
+                .discard-pill { padding:8px 14px; border-radius:999px; font-size:.8rem; font-weight:800; color:#3b2a00;
+                    background: linear-gradient(#fde68a, #fbbf24 60%, #f59e0b);
+                    box-shadow: 0 4px 0 #92590a, 0 8px 12px rgba(0,0,0,.5), inset 0 2px 0 rgba(255,255,255,.6); }
+                .discard-stack { position:relative; width:16px; height:20px; display:inline-block; }
+                .discard-stack i { position:absolute; inset:0; border-radius:3px; background:#fff; border:1px solid #92590a;
+                    font-style:normal; font-size:.65rem; line-height:18px; text-align:center; color:#111; }
+
+                /* ---- table ---- */
+                .game-table { background: transparent;
+                    flex:none; aspect-ratio:1 / 1; border-radius:50% !important;
+                    box-shadow:
+                      0 0 0 9px #6b4423, 0 0 0 12px #2a1708, 0 0 0 15px rgba(250,204,21,.55),
+                      0 30px 50px rgba(0,0,0,.75), 0 0 70px rgba(0,0,0,.6);
+                    transition: box-shadow .4s; }
+                .game-table.table-mine { box-shadow:
+                      0 0 0 9px #6b4423, 0 0 0 12px #2a1708, 0 0 0 15px rgba(250,204,21,.95),
+                      0 30px 50px rgba(0,0,0,.75), 0 0 60px rgba(250,204,21,.55); }
+                .table-felt { position:absolute; inset:0; border-radius:50%;
+                    background:
+                      radial-gradient(circle at 50% 38%, #2a8f55 0%, #1a6b3c 45%, #0c3a20 100%); }
+                .table-felt::after { content:''; position:absolute; inset:0; border-radius:50%;
+                    background: repeating-linear-gradient(135deg, rgba(255,255,255,.035) 0 2px, transparent 2px 5px); }
+                .table-emblem { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+                    font-size:130px; color:rgba(255,255,255,.07); pointer-events:none; text-shadow:0 2px 0 rgba(0,0,0,.25); }
+                .table-ring { position:absolute; inset:14px; border-radius:50%; border:2px dashed rgba(253,224,71,.35);
+                    animation: ringSpin 40s linear infinite; pointer-events:none; }
+                @keyframes ringSpin { to { transform: rotate(360deg); } }
+                .turn-pointer { position:absolute; inset:-2px; pointer-events:none; z-index:50; }
+                .turn-pointer span { position:absolute; left:50%; top:-26px; margin-left:-11px; width:0; height:0;
+                    border-left:11px solid transparent; border-right:11px solid transparent; border-top:18px solid #facc15;
+                    filter: drop-shadow(0 0 6px rgba(250,204,21,.9)); animation: pointerBounce .9s ease-in-out infinite; }
+                @keyframes pointerBounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(6px); } }
+
+                .dealing-overlay { position:absolute; inset:0; border-radius:50%; z-index:900; display:flex; align-items:center; justify-content:center;
+                    background: rgba(0,0,0,.35); pointer-events:none; }
+                .deal-orbit { position:relative; width:90px; height:90px; }
+                .deal-orbit span { position:absolute; font-size:30px; font-weight:900; }
+                .deal-orbit span:nth-child(1) { left:30px; top:0; }
+                .deal-orbit span:nth-child(2) { right:0; top:30px; }
+                .deal-orbit span:nth-child(3) { left:30px; bottom:0; }
+                .deal-orbit span:nth-child(4) { left:0; top:30px; }
+
+                .turn-caption { position:absolute; left:50%; top:calc(50% + 162px); transform:translateX(-50%); z-index:1600;
+                    padding:3px 14px; border-radius:999px; font-size:.7rem; font-weight:800; letter-spacing:.04em; white-space:nowrap;
+                    color:#d1fae5; background:rgba(0,0,0,.55); border:1px solid rgba(255,255,255,.15); pointer-events:none; }
+                .turn-caption.mine { color:#3b2a00; background:linear-gradient(#fde68a,#fbbf24); border-color:transparent;
+                    box-shadow:0 0 14px rgba(250,204,21,.7); animation: capPulse 1.2s ease-in-out infinite; }
+                @keyframes capPulse { 0%,100% { transform:translateX(-50%) scale(1); } 50% { transform:translateX(-50%) scale(1.07); } }
+
+                /* ---- hand panel ---- */
                 .hand-panel {
-                    background: linear-gradient(180deg, rgba(10,20,13,0.75) 0%, rgba(4,10,6,0.97) 40%, #04070a 100%);
+                    background: linear-gradient(180deg, rgba(14,28,18,0.8) 0%, rgba(4,10,6,0.97) 40%, #04070a 100%);
                     backdrop-filter: blur(22px);
                     -webkit-backdrop-filter: blur(22px);
-                    border-top-left-radius: 26px;
-                    border-top-right-radius: 26px;
-                    box-shadow: 0 -10px 30px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.04);
+                    border-top-left-radius: 28px;
+                    border-top-right-radius: 28px;
+                    border-top: 2px solid rgba(250,204,21,.35);
+                    box-shadow: 0 -12px 34px rgba(0,0,0,0.6), inset 0 2px 0 rgba(255,255,255,0.08);
+                }
+
+                /* ---- winner popup ---- */
+                .winner-card { background: linear-gradient(160deg, #1b2a20, #070d09); border: 2px solid #facc15;
+                    box-shadow: 0 0 0 6px rgba(0,0,0,.4), 0 25px 50px rgba(0,0,0,.7), 0 0 60px rgba(250,204,21,.45); }
+                .winner-title { color:#fde047; letter-spacing:2px;
+                    text-shadow: 0 2px 0 #b45309, 0 4px 0 #78350f, 0 0 20px rgba(253,224,71,.6); }
+                .btn3d-gold { border:0; border-radius:999px; padding:12px; color:#4a2c05; cursor:pointer;
+                    background: linear-gradient(#fde68a, #fbbf24 55%, #f59e0b);
+                    box-shadow: 0 6px 0 #92590a, 0 12px 16px rgba(0,0,0,.5), inset 0 2px 0 rgba(255,255,255,.6);
+                    transition: transform .08s, box-shadow .08s; }
+                .btn3d-gold:active { transform: translateY(5px); box-shadow: 0 1px 0 #92590a, 0 3px 6px rgba(0,0,0,.5); }
+
+                @media (prefers-reduced-motion: reduce) {
+                    .env-spot, .env-suit, .table-ring, .turn-pointer span, .turn-caption.mine { animation: none !important; }
                 }
             `}</style>
         </div>

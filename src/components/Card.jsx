@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 
 // Import all 52 card images
 import ace_of_spades from '../assets/cards/ace_of_spades2.png';
@@ -82,7 +82,37 @@ const CARD_IMAGES = {
     },
 };
 
+// ---------- 3D card styling (visual only) ----------
+// Injected once into <head> instead of repeating a <style> tag on all 52 cards.
+const CARD_STYLE_ID = 'card3d-styles';
+const CARD_CSS = `
+.card-item { transform-style: preserve-3d; will-change: transform; }
+.card-item .card-gloss { position:absolute; inset:0; pointer-events:none; border-radius:inherit; z-index:2;
+    background: linear-gradient(115deg, rgba(255,255,255,.38) 0%, rgba(255,255,255,.08) 28%, rgba(255,255,255,0) 45%, rgba(0,0,0,.10) 100%); }
+.card-item .card-edge { position:absolute; inset:0; pointer-events:none; border-radius:inherit; z-index:3;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.55), inset 0 -2px 3px rgba(0,0,0,.18); }
+.card-item.interactive .card-sheen { position:absolute; top:0; bottom:0; width:40%; left:-70%; z-index:4; pointer-events:none;
+    background: linear-gradient(100deg, transparent, rgba(255,255,255,.65), transparent);
+    transform: skewX(-20deg); animation: cardSheen 2.8s ease-in-out infinite; }
+@keyframes cardSheen { 0%,55% { left:-70%; } 100% { left:130%; } }
+.card-item.interactive:active { transform: translateY(2px) scale(.97) !important; }
+@media (hover: hover) {
+    .card-item.interactive:hover { transform: perspective(300px) rotateX(8deg) translateY(-4px) !important;
+        box-shadow: 0 0 0 2px rgba(250,204,21,.95), 0 3px 0 #b8b8b8, 0 14px 18px rgba(0,0,0,.5) !important; }
+}
+@media (prefers-reduced-motion: reduce) { .card-item.interactive .card-sheen { animation: none !important; } }
+`;
+
 export default function Card({ card, onClick, isInteractive }) {
+    useEffect(() => {
+        if (typeof document === 'undefined') return;
+        if (document.getElementById(CARD_STYLE_ID)) return;
+        const el = document.createElement('style');
+        el.id = CARD_STYLE_ID;
+        el.textContent = CARD_CSS;
+        document.head.appendChild(el);
+    }, []);
+
     if (!card) return null;
 
     // card.name is 'Spades' | 'Hearts' | 'Diamonds' | 'Clubs' (matches gameLogic/Game.jsx sortHand)
@@ -101,10 +131,11 @@ export default function Card({ card, onClick, isInteractive }) {
                 border: '1px solid #999',
                 overflow: 'hidden',
                 cursor: isInteractive ? 'pointer' : 'default',
-                boxShadow: '0 4px 8px rgba(0,0,0,0.3)',
+                // layered shadow = card thickness (bottom edge) + soft drop shadow
+                boxShadow: '0 3px 0 #b5b5b5, 0 4px 0 #8a8a8a, 0 9px 12px rgba(0,0,0,0.45)',
                 userSelect: 'none',
                 position: 'relative',
-                transition: 'all 0.2s ease'
+                transition: 'transform 0.2s ease, box-shadow 0.2s ease'
             }}
         >
             {imageSrc ? (
@@ -136,6 +167,11 @@ export default function Card({ card, onClick, isInteractive }) {
                     </div>
                 </div>
             )}
+
+            {/* 3D finish layers (decorative only) */}
+            <span className="card-gloss" />
+            <span className="card-edge" />
+            {isInteractive && <span className="card-sheen" />}
         </div>
     );
 }
